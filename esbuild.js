@@ -21,10 +21,21 @@ const extensionBuild = {
   platform: "node",
   target: "node18",
   format: "cjs",
-  // ssh2 ships optional native bindings (cpu-features, sshcrypto.node) that
-  // esbuild can't bundle. Mark the SSH stack external — node will resolve
-  // them from node_modules at runtime.
-  external: ["vscode", "ssh2", "ssh2-sftp-client", "cpu-features"],
+  // ssh2 ships native bindings (cpu-features, sshcrypto.node) that esbuild
+  // can't bundle. Keep ssh2 + cpu-features external — node resolves them
+  // from node_modules at runtime. ssh2-sftp-client itself is pure JS, so
+  // we bundle it together with its transitive deps (readable-stream,
+  // util-deprecate, string_decoder, safe-buffer, …).
+  //
+  // Why this matters: vsce's dep walker doesn't always include hoisted
+  // transitives — the 0.1.0 vsix shipped ssh2-sftp-client + readable-stream
+  // but not util-deprecate. Because `connection.ts` statically imports
+  // ssh2-sftp-client at module top, the missing transitive made the whole
+  // bundle throw at `require()` time, before `activate()` ever ran. VS Code
+  // then reported "command 'lerobotViewer.addDatasetFolder' not found" (and
+  // the rest) for every button in the welcome view. Bundling the JS deps
+  // takes vsce out of the loop for them.
+  external: ["vscode", "ssh2", "cpu-features"],
   sourcemap: !production,
   minify: production,
   logLevel: "info",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Fix: extension failed to activate on a clean install — every welcome-view button (Add dataset folder, Add Hugging Face dataset, Scan workspace, Add SSH dataset) reported `command 'lerobotViewer.*' not found`. The packaged vsix was missing transitive deps of `ssh2-sftp-client` (`util-deprecate`, `string_decoder`, `safe-buffer`), so the static import in `src/dataset/ssh/connection.ts` threw at module load time and `activate()` never ran. `ssh2-sftp-client` and its pure-JS deps are now bundled into `dist/extension.js`; only `ssh2` and `cpu-features` (which carry native `.node` bindings) stay external.
+
 ## 0.1.0
 
 Initial release.

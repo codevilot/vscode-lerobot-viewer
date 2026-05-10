@@ -1,0 +1,255 @@
+{
+  "name": "lerobot-viewer",
+  "displayName": "LeRobot Viewer",
+  "description": "Browse, preview, and debug Hugging Face LeRobot datasets directly inside VS Code.",
+  "version": "0.1.0",
+  "publisher": "lerobot-tools",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Data Science",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "lerobot",
+    "huggingface",
+    "robotics",
+    "dataset",
+    "rerun"
+  ],
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codevilot/vscode-lerobot-viewer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/codevilot/vscode-lerobot-viewer/issues"
+  },
+  "homepage": "https://github.com/codevilot/vscode-lerobot-viewer#readme",
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lerobotViewer",
+          "title": "LeRobot Viewer",
+          "icon": "media/icons/lerobot.svg"
+        }
+      ]
+    },
+    "views": {
+      "lerobotViewer": [
+        {
+          "id": "lerobotViewer.datasets",
+          "name": "Datasets",
+          "icon": "media/icons/lerobot.svg",
+          "contextualTitle": "LeRobot Datasets"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "lerobotViewer.datasets",
+        "contents": "**LeRobot Viewer**\n\nBrowse, scrub and inspect Hugging Face LeRobot datasets without leaving VS Code.\n\n[$(folder-opened) Add dataset folder](command:lerobotViewer.addDatasetFolder)\n[$(cloud-download) Add Hugging Face dataset](command:lerobotViewer.addHuggingFaceDataset)\n[$(search) Scan workspace](command:lerobotViewer.scanWorkspace)\n\nLeRobot datasets are folders containing a `meta/info.json` file. Both v2.x (per-episode parquet/mp4) and v3.0 (sharded) layouts are supported."
+      }
+    ],
+    "commands": [
+      {
+        "command": "lerobotViewer.openDataset",
+        "title": "LeRobot: Open Dataset",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "lerobotViewer.previewEpisode",
+        "title": "LeRobot: Preview Episode",
+        "icon": "$(play)"
+      },
+      {
+        "command": "lerobotViewer.openMetadata",
+        "title": "LeRobot: Open Metadata",
+        "icon": "$(info)"
+      },
+      {
+        "command": "lerobotViewer.openInRerun",
+        "title": "LeRobot: Open in Rerun",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "lerobotViewer.addDatasetFolder",
+        "title": "LeRobot: Add Dataset Folder",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lerobotViewer.addHuggingFaceDataset",
+        "title": "LeRobot: Add Hugging Face Dataset",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "lerobotViewer.addSshDataset",
+        "title": "LeRobot: Add SSH Dataset",
+        "icon": "$(remote-explorer)"
+      },
+      {
+        "command": "lerobotViewer.removeDataset",
+        "title": "LeRobot: Remove Dataset",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "lerobotViewer.refresh",
+        "title": "LeRobot: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lerobotViewer.scanWorkspace",
+        "title": "LeRobot: Scan Workspace",
+        "icon": "$(search)"
+      },
+      {
+        "command": "lerobotViewer.revealInExplorer",
+        "title": "LeRobot: Reveal in File Explorer",
+        "icon": "$(go-to-file)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "lerobotViewer.addDatasetFolder",
+          "when": "view == lerobotViewer.datasets",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lerobotViewer.addSshDataset",
+          "when": "view == lerobotViewer.datasets",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lerobotViewer.addHuggingFaceDataset",
+          "when": "view == lerobotViewer.datasets",
+          "group": "navigation@3"
+        },
+        {
+          "command": "lerobotViewer.refresh",
+          "when": "view == lerobotViewer.datasets",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "lerobotViewer.openMetadata",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "inline@0"
+        },
+        {
+          "command": "lerobotViewer.previewEpisode",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotEpisode",
+          "group": "inline@1"
+        },
+        {
+          "command": "lerobotViewer.openInRerun",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotEpisode && config.lerobotViewer.enableRerun",
+          "group": "inline@2"
+        },
+        {
+          "command": "lerobotViewer.openInRerun",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset && config.lerobotViewer.enableRerun",
+          "group": "inline@1"
+        },
+        {
+          "command": "lerobotViewer.removeDataset",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "lerobotViewer.previewEpisode",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.openMetadata",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.removeDataset",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "LeRobot Viewer",
+      "properties": {
+        "lerobotViewer.rerunExecutable": {
+          "type": "string",
+          "default": "rerun",
+          "description": "Path or command for the Rerun viewer executable."
+        },
+        "lerobotViewer.huggingfaceCacheDir": {
+          "type": "string",
+          "default": "",
+          "description": "Override directory for caching Hugging Face dataset metadata. Leave empty for default (~/.cache/lerobot-viewer)."
+        },
+        "lerobotViewer.autoScanWorkspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically scan the workspace for LeRobot datasets on startup."
+        },
+        "lerobotViewer.workspaceScanDepth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum directory depth when scanning the workspace for datasets."
+        },
+        "lerobotViewer.enableRerun": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the \"Open in Rerun\" button in the episode preview and tree. Requires the rerun viewer to be installed separately."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@types/ssh2-sftp-client": "^9.0.6",
+    "hyparquet": "^1.25.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ssh2-sftp-client": "^12.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.85.0",
+    "autoprefixer": "^10.4.19",
+    "esbuild": "^0.21.5",
+    "esbuild-plugin-postcss2": "^0.1.2",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
+    "tsx": "^4.16.0",
+    "typescript": "^5.4.5"
+  }
+}

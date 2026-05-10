@@ -1,0 +1,188 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--vscode-font-family, "Segoe UI", -apple-system, system-ui, sans-serif);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-feature-settings: "tnum" 1, "ss01" 1;
+}
+
+/* ---------- Toss-style refinements ---------- */
+
+@layer base {
+  :root {
+    --lr-radius-sm: 8px;
+    --lr-radius: 12px;
+    --lr-radius-lg: 16px;
+    --lr-divider: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+    --lr-card: color-mix(in srgb, var(--vscode-editor-background) 100%, var(--vscode-foreground) 3%);
+    --lr-card-border: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+    --lr-accent: var(--vscode-focusBorder, #5fbcff);
+    --lr-accent-soft: color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent);
+  }
+
+  /* Numeric hierarchy: stats use tnum so digits don't shift on update. */
+  .lr-num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+}
+
+@layer components {
+  /* Card: the Toss-y soft surface used everywhere. */
+  .lr-card {
+    background: var(--lr-card);
+    border: 1px solid var(--lr-card-border);
+    border-radius: var(--lr-radius);
+  }
+
+  .lr-card-pad {
+    @apply lr-card p-4;
+  }
+
+  /* Section header label: small caps muted text above a stat block. */
+  .lr-section-label {
+    @apply text-[10px] font-semibold uppercase tracking-[0.08em];
+    color: color-mix(in srgb, var(--vscode-foreground) 55%, transparent);
+  }
+
+  /* Stat: small label + big number (Toss signature). */
+  .lr-stat-label {
+    @apply text-[11px] font-medium;
+    color: color-mix(in srgb, var(--vscode-foreground) 60%, transparent);
+  }
+
+  .lr-stat-value {
+    @apply text-[18px] font-semibold leading-none lr-num;
+    color: var(--vscode-foreground);
+  }
+
+  /* Pill button family. */
+  .lr-pill {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-medium transition-all duration-150 ease-out;
+    background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+    color: var(--vscode-foreground);
+    border: 1px solid transparent;
+  }
+  .lr-pill:hover {
+    background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  }
+  .lr-pill:focus-visible {
+    outline: none;
+    border-color: var(--lr-accent);
+  }
+
+  .lr-pill-primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+  }
+  .lr-pill-primary:hover {
+    background: var(--vscode-button-hoverBackground);
+  }
+
+  .lr-pill-active {
+    background: var(--lr-accent-soft);
+    color: var(--lr-accent);
+    border-color: color-mix(in srgb, var(--lr-accent) 40%, transparent);
+  }
+
+  /* Icon-only round button used in transport. */
+  .lr-icon-btn {
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-full text-[13px] leading-none transition-colors duration-150 ease-out;
+    color: var(--vscode-foreground);
+  }
+  .lr-icon-btn:hover {
+    background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  }
+
+  .lr-icon-btn-primary {
+    @apply h-9 w-9 text-[14px];
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+  }
+  .lr-icon-btn-primary:hover {
+    background: var(--vscode-button-hoverBackground);
+  }
+
+  /* Soft input using VS Code variables. */
+  .lr-input {
+    @apply rounded-md px-2 py-1 text-[12px];
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+  }
+  .lr-input:focus { outline: 1px solid var(--lr-accent); }
+
+  /* Status badge (version, source, etc.) */
+  .lr-badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider;
+    background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+    color: color-mix(in srgb, var(--vscode-foreground) 70%, transparent);
+  }
+  .lr-badge-v3 {
+    background: color-mix(in srgb, #79e08c 18%, transparent);
+    color: #79e08c;
+  }
+  .lr-badge-v2 {
+    background: color-mix(in srgb, #5fbcff 18%, transparent);
+    color: #5fbcff;
+  }
+  .lr-badge-warn {
+    background: color-mix(in srgb, #f5a85a 18%, transparent);
+    color: #f5a85a;
+  }
+
+  .lr-divider {
+    border-top: 1px solid var(--lr-divider);
+  }
+
+  /* Native slider styled to match. */
+  .lr-range {
+    @apply h-2 w-full appearance-none rounded-full;
+    background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  }
+  .lr-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    background: var(--lr-accent);
+    border: 2px solid var(--vscode-editor-background);
+    box-shadow: 0 1px 4px color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+    cursor: pointer;
+  }
+  .lr-range::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    background: var(--lr-accent);
+    border: 2px solid var(--vscode-editor-background);
+    cursor: pointer;
+  }
+}
+
+/* Scrollbars stay native VS Code-ish but slimmed. */
+.scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--vscode-foreground) 15%, transparent); border-radius: 4px; }
+.scrollbar-thin::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--vscode-foreground) 25%, transparent); }
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--lr-divider);
+  background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+  color: color-mix(in srgb, var(--vscode-foreground) 75%, transparent);
+  border-radius: 4px;
+  padding: 0 4px;
+  font: 10px var(--vscode-editor-font-family, ui-monospace, monospace);
+}

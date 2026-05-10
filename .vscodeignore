@@ -1,0 +1,31 @@
+.vscode/**
+.vscode-test/**
+out/**
+out-webview/**
+src/**
+webview/**
+node_modules/**
+# SSH stack must ship at runtime (esbuild externalizes it because of native
+# bindings); list the entire transitive closure here.
+!node_modules/ssh2-sftp-client/**
+!node_modules/ssh2/**
+!node_modules/cpu-features/**
+!node_modules/asn1/**
+!node_modules/bcrypt-pbkdf/**
+!node_modules/safer-buffer/**
+!node_modules/tweetnacl/**
+!node_modules/concat-stream/**
+!node_modules/buffer-from/**
+!node_modules/inherits/**
+!node_modules/readable-stream/**
+!node_modules/typedarray/**
+.gitignore
+.eslintrc*
+tsconfig*.json
+esbuild.js
+postcss.config.js
+tailwind.config.js
+**/*.map
+**/*.ts
+**/*.tsx
+examples/**

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EpisodePreviewData } from "../src/types";
 import { getBridge } from "./lib/vscode";
+import { patchUiState, readUiState } from "./lib/webviewState";
 import { usePlayback } from "./hooks/usePlayback";
 import { usePlaybackShortcuts } from "./hooks/usePlaybackShortcuts";
 import { Header } from "./components/Header";
@@ -13,11 +14,19 @@ import { TrajectoryPlot } from "./components/TrajectoryPlot";
 import { EventMarkers } from "./components/EventMarkers";
 import { TaskBand } from "./components/TaskBand";
 
+const ASIDE_MIN = 240;
+const ASIDE_MAX = 720;
+const ASIDE_DEFAULT = 320;
+
 export function App({ initial }: { initial: EpisodePreviewData }) {
   const bridge = useMemo(() => getBridge(), []);
   const [data, setData] = useState<EpisodePreviewData>(initial);
   const [focusedCamera, setFocusedCamera] = useState<string | undefined>();
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const [asideWidth, setAsideWidth] = useState<number>(() => {
+    const w = readUiState().asideWidth;
+    return typeof w === "number" && w >= ASIDE_MIN && w <= ASIDE_MAX ? w : ASIDE_DEFAULT;
+  });
 
   const fps = data.info.fps || 30;
   const totalFrames = data.episode.length ?? 0;
@@ -110,10 +119,11 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
           <SignalsPanel data={data} totalFrames={totalFrames} cursorFrame={playback.frame} />
         </main>
 
+        <AsideResizer width={asideWidth} setWidth={setAsideWidth} />
         <aside
-          className="w-80 shrink-0 overflow-y-auto scrollbar-thin"
+          className="shrink-0 overflow-y-auto scrollbar-thin"
           style={{
-            borderLeft: "1px solid var(--lr-divider)",
+            width: `${asideWidth}px`,
             background: "color-mix(in srgb, var(--vscode-foreground) 2%, transparent)",
           }}
         >
@@ -267,6 +277,80 @@ function EmptyVideoState({ message }: { message: string }) {
   return (
     <div className="col-span-full flex h-40 items-center justify-center rounded border border-dashed border-vscode-border text-vscode-muted">
       {message}
+    </div>
+  );
+}
+
+function AsideResizer({
+  width,
+  setWidth,
+}: {
+  width: number;
+  setWidth: (next: number) => void;
+}) {
+  const startRef = useRef<{ x: number; w: number } | null>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const start = startRef.current;
+      if (!start) return;
+      // Drag leftwards (smaller clientX) makes the right aside wider.
+      const next = Math.max(ASIDE_MIN, Math.min(ASIDE_MAX, start.w + (start.x - e.clientX)));
+      setWidth(next);
+    };
+    const onUp = () => {
+      if (!startRef.current) return;
+      startRef.current = null;
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      patchUiState({ asideWidth: width });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [setWidth, width]);
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize metadata panel"
+      tabIndex={0}
+      className="group relative w-1 shrink-0 cursor-col-resize"
+      style={{ background: "var(--lr-divider)" }}
+      onMouseDown={(e) => {
+        startRef.current = { x: e.clientX, w: width };
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "col-resize";
+        e.preventDefault();
+      }}
+      onDoubleClick={() => {
+        setWidth(ASIDE_DEFAULT);
+        patchUiState({ asideWidth: ASIDE_DEFAULT });
+      }}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 32 : 8;
+        if (e.key === "ArrowLeft") {
+          const next = Math.min(ASIDE_MAX, width + step);
+          setWidth(next);
+          patchUiState({ asideWidth: next });
+          e.preventDefault();
+        } else if (e.key === "ArrowRight") {
+          const next = Math.max(ASIDE_MIN, width - step);
+          setWidth(next);
+          patchUiState({ asideWidth: next });
+          e.preventDefault();
+        }
+      }}
+    >
+      {/* Wider invisible hit area for easier grabbing. */}
+      <span
+        aria-hidden
+        className="absolute inset-y-0 -left-1.5 -right-1.5 group-hover:bg-[color-mix(in_srgb,var(--lr-accent)_18%,transparent)]"
+      />
     </div>
   );
 }

@@ -19,6 +19,11 @@ export function sshCacheRoot(context: vscode.ExtensionContext): string {
   return nodePath.join(context.globalStorageUri.fsPath, "ssh");
 }
 
+/** Stable DatasetDescriptor.id for an SSH target. Used for dedupe. */
+export function sshDatasetId(target: SshTarget): string {
+  return `ssh:${slug(target.host)}:${slug(target.remotePath)}`;
+}
+
 export async function probeRemoteDataset(
   target: SshTarget,
 ): Promise<{ ok: boolean; reason?: string }> {
@@ -62,7 +67,7 @@ export async function fetchSshDataset(
 
   const name = posix.basename(target.remotePath) || target.host;
   return {
-    id: `ssh:${slug(target.host)}:${slug(target.remotePath)}`,
+    id: sshDatasetId(target),
     name,
     root: cacheDir,
     source: "ssh",

@@ -14,7 +14,7 @@ import {
   findRemoteDatasets,
   parseSshConfig,
   pickRemoteFolder,
-  probeRemoteDataset,
+  sshDatasetId,
 } from "./dataset/ssh";
 import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
@@ -82,9 +82,30 @@ export function registerCommands(
   });
 
   reg(CommandIds.addSshDataset, async () => {
-    const target = await runSshWizard();
-    if (!target) return;
-    await service.addSshDataset(target);
+    const targets = await runSshWizard();
+    if (!targets || targets.length === 0) return;
+
+    const existing = new Set(service.list().map((d) => d.id));
+    let added = 0;
+    let skipped = 0;
+    for (const t of targets) {
+      if (existing.has(sshDatasetId(t))) {
+        skipped++;
+        continue;
+      }
+      const desc = await service.addSshDataset(t);
+      if (desc) {
+        existing.add(desc.id);
+        added++;
+      }
+    }
+    if (added > 0) {
+      const note =
+        skipped > 0
+          ? `Added ${added} SSH dataset${added === 1 ? "" : "s"} (${skipped} already registered)`
+          : `Added ${added} SSH dataset${added === 1 ? "" : "s"}`;
+      void vscode.window.showInformationMessage(note);
+    }
   });
 
   reg(CommandIds.removeDataset, (...args: unknown[]) => {
@@ -196,7 +217,7 @@ async function pickEpisode(service: DatasetService): Promise<PreviewArgs | undef
   return { datasetId: datasetPick.id, episodeIndex: episodePick.idx };
 }
 
-async function runSshWizard(): Promise<SshTarget | undefined> {
+async function runSshWizard(): Promise<SshTarget[] | undefined> {
   // Step 1: pick a host alias from ~/.ssh/config or enter manually.
   const aliases = await parseSshConfig();
   const ENTER = "$enter$";
@@ -254,77 +275,34 @@ async function runSshWizard(): Promise<SshTarget | undefined> {
   );
   if (!remotePath) return undefined;
 
-  // Step 3: probe.
+  // Step 3: scan from the picked path for every LeRobot dataset there.
+  // We always scan (root is included), so a folder that is itself a
+  // dataset still matches, and any nested datasets are picked up too.
+  // No "this isn't a dataset" error — empty results just mean nothing
+  // to add. Real connection errors (auth/network) still surface.
   const fullTarget: SshTarget = { ...target, remotePath: remotePath.trim() };
-  const probe = await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: `Connecting to ${fullTarget.user ? `${fullTarget.user}@` : ""}${fullTarget.host}…`,
-    },
-    () => probeRemoteDataset(fullTarget),
-  );
-  if (probe.ok) return fullTarget;
-
-  // If the only reason probe failed is "no meta/info.json here", the
-  // user may have pointed at a parent folder. Run a bounded scan and
-  // offer any nested datasets we find before giving up.
-  if (probe.reason && /no meta\/info\.json/i.test(probe.reason)) {
-    const picked = await runSshFallbackScan(fullTarget);
-    if (picked) return { ...fullTarget, remotePath: picked };
-    return undefined;
-  }
-  vscode.window.showErrorMessage(`SSH probe failed: ${probe.reason ?? "unknown error"}`);
-  return undefined;
-}
-
-async function runSshFallbackScan(target: SshTarget): Promise<string | undefined> {
-  const root = target.remotePath;
-  const found = await vscode.window.withProgress<string[]>(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: `Scanning ${root} for LeRobot datasets`,
-      cancellable: true,
-    },
-    (progress, token) =>
-      findRemoteDatasets(target, root, token, (p) =>
-        progress.report({
-          message: `found ${p.found} · scanned ${p.scanned} · ${shortenSshProgress(p.currentDir, root)}`,
-        }),
-      ),
-  );
-
-  if (found.length === 0) {
-    vscode.window.showErrorMessage(
-      `No LeRobot dataset (meta/info.json) found in or under ${root}.`,
+  const root = fullTarget.remotePath;
+  let found: string[];
+  try {
+    found = await vscode.window.withProgress<string[]>(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Scanning ${root} for LeRobot datasets`,
+        cancellable: true,
+      },
+      (progress, token) =>
+        findRemoteDatasets(fullTarget, root, token, (p) =>
+          progress.report({
+            message: `found ${p.found} · scanned ${p.scanned} · ${shortenSshProgress(p.currentDir, root)}`,
+          }),
+        ),
     );
+  } catch (err) {
+    vscode.window.showErrorMessage(`SSH scan failed: ${(err as Error).message}`);
     return undefined;
   }
 
-  type Item = vscode.QuickPickItem & { path: string };
-  const items: Item[] = found
-    .slice()
-    .sort((a, b) => a.localeCompare(b))
-    .map((p) => {
-      const rel = posix.relative(root, p);
-      return {
-        label: `$(database) ${posix.basename(p) || p}`,
-        description: rel.length === 0 ? "(this folder)" : rel,
-        detail: p,
-        path: p,
-      };
-    });
-  const title =
-    found.length === 1
-      ? `Found 1 dataset under ${root}`
-      : `${found.length} datasets under ${root}`;
-  const pick = await vscode.window.showQuickPick(items, {
-    title,
-    placeHolder: "Select a dataset to add",
-    ignoreFocusOut: true,
-    matchOnDescription: true,
-    matchOnDetail: true,
-  });
-  return pick?.path;
+  return found.map((p) => ({ ...fullTarget, remotePath: p }));
 }
 
 function shortenSshProgress(full: string, root: string): string {

@@ -3,5 +3,11 @@
 
 export { parseSshConfig, parseSshConfigText, type SshHostAlias } from "./config";
 export { pickRemoteFolder } from "./browser";
-export { ensureSshFile, fetchSshDataset, probeRemoteDataset, sshCacheRoot } from "./fetch";
+export {
+  ensureSshFile,
+  fetchSshDataset,
+  probeRemoteDataset,
+  sshCacheRoot,
+  sshDatasetId,
+} from "./fetch";
 export { findRemoteDatasets, type ScanProgress } from "./scan";

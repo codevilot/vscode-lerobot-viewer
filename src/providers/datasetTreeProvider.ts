@@ -6,6 +6,7 @@
 
 import * as vscode from "vscode";
 import type { DatasetService } from "../dataset/datasetService";
+import { getSshConnectionState, onSshPoolChange } from "../dataset/ssh";
 import { log } from "../log";
 import type {
   DatasetDescriptor,
@@ -64,6 +65,8 @@ export class DatasetTreeProvider implements vscode.TreeDataProvider<LeRobotTreeN
 
   constructor(private readonly service: DatasetService) {
     this.disposables.push(this.service.onDidChange(() => this._onDidChange.fire(undefined)));
+    // Refresh SSH dataset rows whenever a connection comes up / drops.
+    this.disposables.push(onSshPoolChange(() => this._onDidChange.fire(undefined)));
   }
 
   setFilter(text: string): void {
@@ -140,12 +143,55 @@ function datasetItem(node: DatasetNode): vscode.TreeItem {
   const item = new vscode.TreeItem(node.descriptor.name, vscode.TreeItemCollapsibleState.Collapsed);
   item.id = node.descriptor.id;
   item.contextValue = "lerobotDataset";
-  item.iconPath = new vscode.ThemeIcon(iconForSource(node.descriptor.source));
-  item.tooltip = node.descriptor.repoId
-    ? `${node.descriptor.repoId} (Hugging Face)`
-    : node.descriptor.root ?? node.descriptor.id;
+  item.iconPath = sshIconFor(node.descriptor) ?? new vscode.ThemeIcon(iconForSource(node.descriptor.source));
+  item.tooltip = sshTooltipFor(node.descriptor) ?? (
+    node.descriptor.repoId
+      ? `${node.descriptor.repoId} (Hugging Face)`
+      : node.descriptor.root ?? node.descriptor.id
+  );
   item.description = sourceDescription(node.descriptor);
   return item;
+}
+
+/**
+ * For SSH datasets, replace the default "remote" icon with a colored
+ * dot reflecting whether the underlying SFTP session is alive. Other
+ * sources keep the default.
+ */
+function sshIconFor(d: DatasetDescriptor): vscode.ThemeIcon | undefined {
+  if (d.source !== "ssh" || !d.ssh) return undefined;
+  const state = getSshConnectionState(d.ssh);
+  switch (state) {
+    case "connected":
+      return new vscode.ThemeIcon(
+        "circle-filled",
+        new vscode.ThemeColor("charts.green"),
+      );
+    case "connecting":
+      return new vscode.ThemeIcon(
+        "loading~spin",
+        new vscode.ThemeColor("charts.yellow"),
+      );
+    case "disconnected":
+    default:
+      return new vscode.ThemeIcon(
+        "circle-outline",
+        new vscode.ThemeColor("descriptionForeground"),
+      );
+  }
+}
+
+function sshTooltipFor(d: DatasetDescriptor): string | undefined {
+  if (d.source !== "ssh" || !d.ssh) return undefined;
+  const state = getSshConnectionState(d.ssh);
+  const host = d.ssh.alias ?? `${d.ssh.user ? `${d.ssh.user}@` : ""}${d.ssh.host}`;
+  const label =
+    state === "connected"
+      ? "● Connected"
+      : state === "connecting"
+        ? "◐ Connecting…"
+        : "○ Disconnected";
+  return `${label}\n${host}:${d.ssh.remotePath}`;
 }
 
 function groupItem(node: GroupNode): vscode.TreeItem {

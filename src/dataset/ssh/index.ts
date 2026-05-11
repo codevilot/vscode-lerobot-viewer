@@ -7,8 +7,15 @@ export {
   ensureSshFile,
   fetchSshDataset,
   probeRemoteDataset,
+  sshCacheDir,
   sshCacheRoot,
   sshDatasetId,
 } from "./fetch";
 export { findRemoteDatasets, type ScanProgress } from "./scan";
-export { setPinnedTargets, disposeSshPool } from "./pool";
+export {
+  setPinnedTargets,
+  disposeSshPool,
+  getSshConnectionState,
+  onSshPoolChange,
+  type SshConnectionState,
+} from "./pool";

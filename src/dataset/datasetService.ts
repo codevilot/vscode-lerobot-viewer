@@ -17,7 +17,7 @@ import { log, logError } from "../log";
 import type { DatasetDescriptor, DatasetSnapshot, SshTarget } from "../types";
 import { ensureHuggingFaceDataset } from "./huggingface";
 import { isLeRobotDataset, loadDataset } from "./datasetLoader";
-import { fetchSshDataset, setPinnedTargets, sshCacheRoot } from "./ssh";
+import { fetchSshDataset, setPinnedTargets, sshCacheDir, sshCacheRoot } from "./ssh";
 
 const STATE_KEY = "lerobotViewer.descriptors";
 const SKIP_DIR_NAMES = new Set([
@@ -43,6 +43,10 @@ export class DatasetService implements vscode.Disposable {
   constructor(private readonly context: vscode.ExtensionContext) {
     this.descriptors = this.readPersisted();
     this.refreshSshPins();
+    // Clean up SSH cache directories that no longer correspond to a
+    // registered dataset. Runs in the background — failures here are
+    // never fatal.
+    void this.cleanOrphanSshCaches();
   }
 
   list(): DatasetDescriptor[] {
@@ -181,12 +185,24 @@ export class DatasetService implements vscode.Disposable {
 
   remove(id: string): void {
     const before = this.descriptors.length;
+    const removed = this.descriptors.find((d) => d.id === id);
     this.descriptors = this.descriptors.filter((d) => d.id !== id);
     this.snapshotCache.delete(id);
     if (this.descriptors.length !== before) {
       this.persist();
       this.refreshSshPins();
       this._onDidChange.fire();
+      if (removed?.source === "ssh" && removed.ssh) {
+        // The user explicitly dropped this SSH dataset — its cache
+        // (downloaded meta + per-episode files) is no longer
+        // referenced by anything in the tree, so reclaim the disk
+        // space. Fire-and-forget; not having the cache around just
+        // means a slightly slower re-add later.
+        const dir = sshCacheDir(sshCacheRoot(this.context), removed.ssh);
+        void fs.rm(dir, { recursive: true, force: true }).catch((err) => {
+          logError(`removing SSH cache ${dir}`, err);
+        });
+      }
     }
   }
 
@@ -264,6 +280,107 @@ export class DatasetService implements vscode.Disposable {
       .filter((d) => d.source === "ssh" && d.ssh)
       .map((d) => d.ssh!);
     setPinnedTargets(targets);
+  }
+
+  /**
+   * Sweep the SSH cache root and delete every (host, path) directory
+   * that doesn't map to a currently registered SSH dataset. Run once
+   * on activate; cheap because we only stat top two directory levels.
+   */
+  private async cleanOrphanSshCaches(): Promise<void> {
+    const cacheRoot = sshCacheRoot(this.context);
+    let hostDirs: string[];
+    try {
+      hostDirs = await fs.readdir(cacheRoot);
+    } catch {
+      return;
+    }
+    const registered = new Set(
+      this.descriptors
+        .filter((d) => d.source === "ssh" && d.ssh)
+        .map((d) => sshCacheDir(cacheRoot, d.ssh!)),
+    );
+    let removed = 0;
+    for (const host of hostDirs) {
+      const hostPath = path.join(cacheRoot, host);
+      let pathDirs: string[];
+      try {
+        const stat = await fs.stat(hostPath);
+        if (!stat.isDirectory()) continue;
+        pathDirs = await fs.readdir(hostPath);
+      } catch {
+        continue;
+      }
+      for (const p of pathDirs) {
+        const full = path.join(hostPath, p);
+        if (registered.has(full)) continue;
+        try {
+          await fs.rm(full, { recursive: true, force: true });
+          removed++;
+          log(`Cleaned orphan SSH cache: ${full}`);
+        } catch (err) {
+          logError(`cleaning orphan SSH cache ${full}`, err);
+        }
+      }
+      // Collapse now-empty host dir.
+      try {
+        const remaining = await fs.readdir(hostPath);
+        if (remaining.length === 0) await fs.rmdir(hostPath);
+      } catch {
+        // ignore
+      }
+    }
+    if (removed > 0) log(`SSH cache: cleaned ${removed} orphan dir(s)`);
+  }
+
+  /**
+   * Manually clear every SSH cache directory under globalStorage.
+   * Triggered by the "Clean SSH cache" command. Currently-registered
+   * datasets keep their entries in the tree but lose their cached
+   * meta — the next open re-downloads from the remote.
+   */
+  async cleanAllSshCaches(): Promise<{ removed: number; total: number }> {
+    const cacheRoot = sshCacheRoot(this.context);
+    let hostDirs: string[];
+    try {
+      hostDirs = await fs.readdir(cacheRoot);
+    } catch {
+      return { removed: 0, total: 0 };
+    }
+    let total = 0;
+    let removed = 0;
+    for (const host of hostDirs) {
+      const hostPath = path.join(cacheRoot, host);
+      let pathDirs: string[];
+      try {
+        const stat = await fs.stat(hostPath);
+        if (!stat.isDirectory()) continue;
+        pathDirs = await fs.readdir(hostPath);
+      } catch {
+        continue;
+      }
+      for (const p of pathDirs) {
+        total++;
+        const full = path.join(hostPath, p);
+        try {
+          await fs.rm(full, { recursive: true, force: true });
+          removed++;
+        } catch (err) {
+          logError(`cleaning SSH cache ${full}`, err);
+        }
+      }
+      try {
+        const remaining = await fs.readdir(hostPath);
+        if (remaining.length === 0) await fs.rmdir(hostPath);
+      } catch {
+        // ignore
+      }
+    }
+    // Invalidate every cached snapshot — their roots no longer have
+    // meta on disk.
+    this.snapshotCache.clear();
+    log(`SSH cache: cleaned ${removed}/${total} dir(s) on manual sweep`);
+    return { removed, total };
   }
 
   private readPersisted(): DatasetDescriptor[] {

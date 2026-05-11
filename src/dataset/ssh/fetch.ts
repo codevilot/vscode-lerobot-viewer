@@ -19,6 +19,11 @@ export function sshCacheRoot(context: vscode.ExtensionContext): string {
   return nodePath.join(context.globalStorageUri.fsPath, "ssh");
 }
 
+/** Per-target cache directory under sshCacheRoot. */
+export function sshCacheDir(cacheRoot: string, target: SshTarget): string {
+  return nodePath.join(cacheRoot, slug(target.host), slug(target.remotePath));
+}
+
 /** Stable DatasetDescriptor.id for an SSH target. Used for dedupe. */
 export function sshDatasetId(target: SshTarget): string {
   return `ssh:${slug(target.host)}:${slug(target.remotePath)}`;
@@ -52,7 +57,7 @@ export async function fetchSshDataset(
   cacheRoot: string,
   progress?: (msg: string) => void,
 ): Promise<DatasetDescriptor> {
-  const cacheDir = nodePath.join(cacheRoot, slug(target.host), slug(target.remotePath));
+  const cacheDir = sshCacheDir(cacheRoot, target);
   await fs.mkdir(cacheDir, { recursive: true });
 
   await withSftp(target, async (sftp) => {

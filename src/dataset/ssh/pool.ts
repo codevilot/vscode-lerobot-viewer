@@ -17,9 +17,12 @@
 //                  reconnect transparently.
 
 import type SftpClient from "ssh2-sftp-client";
+import * as vscode from "vscode";
 import { log } from "../../log";
 import type { SshTarget } from "../../types";
 import { clearSessionPasswords, connectSilent, connectWithRetry } from "./connection";
+
+export type SshConnectionState = "connected" | "connecting" | "disconnected";
 
 interface PoolEntry {
   sftp: SftpClient;
@@ -46,7 +49,34 @@ const pinnedTargets = new Map<string, SshTarget>();
 // (e.g., if the underlying session drops twice in quick succession).
 const warmupInflight = new Set<string>();
 
-const WARMUP_RECONNECT_DELAY_MS = 1500;
+// Reconnect delays for silent warm-up retries after a drop, in
+// ascending order. The first delay is also used for the initial
+// reconnect kicked off from the lifecycle close handler. Sum totals
+// roughly 80 s of retry attempts before we give up and wait for the
+// next user action.
+const RECONNECT_BACKOFF_MS = [1500, 5000, 15000, 60000];
+
+// Coalesced "something about the pool changed" event used by the
+// tree view to refresh connection indicators on SSH dataset rows.
+const poolChangeEmitter = new vscode.EventEmitter<void>();
+export const onSshPoolChange = poolChangeEmitter.event;
+let changeTimer: NodeJS.Timeout | undefined;
+function fireChange(): void {
+  if (changeTimer) return;
+  changeTimer = setTimeout(() => {
+    changeTimer = undefined;
+    poolChangeEmitter.fire();
+  }, 80);
+}
+
+/** Snapshot of a target's connection state, used by the tree view. */
+export function getSshConnectionState(target: SshTarget): SshConnectionState {
+  const key = poolKey(target);
+  const entry = pool.get(key);
+  if (entry && !entry.dead) return "connected";
+  if (pending.has(key) || warmupInflight.has(key)) return "connecting";
+  return "disconnected";
+}
 
 function poolKey(t: SshTarget): string {
   return `${t.user ?? ""}@${t.host}:${t.port ?? 22}|${t.identityFile ?? ""}`;
@@ -71,17 +101,19 @@ function attachLifecycle(key: string, entry: PoolEntry): void {
     if (pool.get(key) === entry) {
       pool.delete(key);
       log(`SSH pool: evicted ${key} (${reason})`);
+      fireChange();
     }
     // If the dead session belonged to a registered dataset, silently
     // try to bring it back so the next user action doesn't have to
-    // wait through a fresh connect.
+    // wait through a fresh connect. Subsequent failures inside
+    // warmupTarget itself schedule their own backed-off retries.
     const target = pinnedTargets.get(key);
     if (target) {
       setTimeout(() => {
         if (!pinnedTargets.has(key)) return;     // unpinned during wait
         if (pool.has(key)) return;               // someone else reconnected
-        void warmupTarget(target);
-      }, WARMUP_RECONNECT_DELAY_MS);
+        void warmupTarget(target, 0);
+      }, RECONNECT_BACKOFF_MS[0]);
     }
   };
   inner.on("close", () => kill("close"));
@@ -97,15 +129,20 @@ function attachLifecycle(key: string, entry: PoolEntry): void {
  * silent auth isn't possible we just give up — the next user action
  * triggers the regular interactive `withSftp` path which can prompt.
  */
-async function warmupTarget(target: SshTarget): Promise<void> {
+async function warmupTarget(target: SshTarget, attempt = 0): Promise<void> {
   const key = poolKey(target);
   if (pool.has(key)) return;
   if (pending.has(key)) return;
   if (warmupInflight.has(key)) return;
   warmupInflight.add(key);
+  fireChange();
   try {
     const sftp = await connectSilent(target);
     if (!sftp) {
+      // Silent auth genuinely unavailable (no agent, no cached pw,
+      // no usable key). No point retrying with backoff — the auth
+      // situation won't change without a user action. Wait for the
+      // next interactive acquire to prompt.
       log(`SSH pool: warmup skipped for ${key} (no silent auth available)`);
       return;
     }
@@ -119,10 +156,24 @@ async function warmupTarget(target: SshTarget): Promise<void> {
     attachLifecycle(key, entry);
     pool.set(key, entry);
     log(`SSH pool: warmed up ${key}`);
+    fireChange();
   } catch (err) {
-    log(`SSH pool: warmup failed for ${key}: ${(err as Error).message}`);
+    // Network / timeout / dns. These are transient — schedule
+    // another silent attempt with longer backoff, up to the cap.
+    log(
+      `SSH pool: warmup failed for ${key} (attempt ${attempt + 1}/${RECONNECT_BACKOFF_MS.length}): ${(err as Error).message}`,
+    );
+    const next = attempt + 1;
+    if (pinnedTargets.has(key) && next < RECONNECT_BACKOFF_MS.length) {
+      setTimeout(() => {
+        if (!pinnedTargets.has(key)) return;
+        if (pool.has(key)) return;
+        void warmupTarget(target, next);
+      }, RECONNECT_BACKOFF_MS[next]);
+    }
   } finally {
     warmupInflight.delete(key);
+    fireChange();
   }
 }
 
@@ -137,11 +188,13 @@ async function acquire(target: SshTarget): Promise<PoolEntry> {
   if (inflight) return inflight;
 
   const next = (async () => {
+    fireChange();  // moved into "connecting" state
     const sftp = await connectWithRetry(target);
     const entry: PoolEntry = { sftp, refs: 0, dead: false };
     attachLifecycle(key, entry);
     pool.set(key, entry);
     log(`SSH pool: opened ${key}`);
+    fireChange();
     return entry;
   })();
   pending.set(key, next);
@@ -149,6 +202,7 @@ async function acquire(target: SshTarget): Promise<PoolEntry> {
     return await next;
   } finally {
     pending.delete(key);
+    fireChange();
   }
 }
 

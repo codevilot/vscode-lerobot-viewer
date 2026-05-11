@@ -115,6 +115,11 @@
         "command": "lerobotViewer.revealInExplorer",
         "title": "LeRobot: Reveal in File Explorer",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "lerobotViewer.cleanSshCache",
+        "title": "LeRobot: Clean SSH cache",
+        "icon": "$(clear-all)"
       }
     ],
     "menus": {

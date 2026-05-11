@@ -87,6 +87,35 @@ export function clearSessionPasswords(): void {
   sessionPasswords.clear();
 }
 
+/**
+ * Try to connect once, silently. Uses ssh-agent / private key / the
+ * session-cached password (if any). On auth failure returns undefined
+ * — the caller can fall back to the interactive `connectWithRetry`
+ * when a user action makes prompting acceptable. Non-auth errors
+ * (network / timeout / dns) propagate so callers can decide what to
+ * do about them.
+ *
+ * Used by the pool's warm-up + auto-reconnect paths so connections
+ * to registered SSH datasets can be established / re-established in
+ * the background without ever surprising the user with a password
+ * box.
+ */
+export async function connectSilent(target: SshTarget): Promise<SftpClient | undefined> {
+  const credKey = sessionCredKey(target);
+  const cached = sessionPasswords.get(credKey);
+  try {
+    return await connect(cached ? { ...target, password: cached } : target);
+  } catch (err) {
+    if (isAuthError((err as Error).message ?? "")) {
+      // Stale cached password? Drop it so the next interactive try
+      // starts clean.
+      if (cached) sessionPasswords.delete(credKey);
+      return undefined;
+    }
+    throw err;
+  }
+}
+
 function isAuthError(message: string): boolean {
   return /passphrase|password|authentication|All configured authentication methods failed|integrity check failed/i.test(
     message,

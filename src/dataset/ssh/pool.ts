@@ -19,7 +19,7 @@
 import type SftpClient from "ssh2-sftp-client";
 import { log } from "../../log";
 import type { SshTarget } from "../../types";
-import { clearSessionPasswords, connectWithRetry } from "./connection";
+import { clearSessionPasswords, connectSilent, connectWithRetry } from "./connection";
 
 interface PoolEntry {
   sftp: SftpClient;
@@ -33,13 +33,20 @@ const IDLE_TIMEOUT_MS = 5 * 60_000;
 const pool = new Map<string, PoolEntry>();
 const pending = new Map<string, Promise<PoolEntry>>();
 
-// Keys of SSH targets that should stay connected as long as the user
-// has the matching dataset registered in the extension. Entries with
-// pinned keys ignore the idle timeout — they only close when the
-// underlying session dies (and gets re-established on demand) or when
-// the extension deactivates. Ad-hoc sessions used by the add-dataset
-// wizard (browse / scan / probe) are not pinned and still time out.
-const pinnedKeys = new Set<string>();
+// Targets that should stay connected as long as the user has the
+// matching dataset registered in the extension. Pinned entries skip
+// the idle timeout, and when their session dies the pool tries to
+// silently rebuild it in the background so the next user action
+// finds a ready connection. Stored as a Map (not just keys) so the
+// lifecycle reconnect path has a SshTarget to feed to connectSilent.
+const pinnedTargets = new Map<string, SshTarget>();
+
+// In-flight silent warm-up acquires, keyed by pool key. Prevents
+// stacking multiple background connect attempts for the same target
+// (e.g., if the underlying session drops twice in quick succession).
+const warmupInflight = new Set<string>();
+
+const WARMUP_RECONNECT_DELAY_MS = 1500;
 
 function poolKey(t: SshTarget): string {
   return `${t.user ?? ""}@${t.host}:${t.port ?? 22}|${t.identityFile ?? ""}`;
@@ -65,10 +72,58 @@ function attachLifecycle(key: string, entry: PoolEntry): void {
       pool.delete(key);
       log(`SSH pool: evicted ${key} (${reason})`);
     }
+    // If the dead session belonged to a registered dataset, silently
+    // try to bring it back so the next user action doesn't have to
+    // wait through a fresh connect.
+    const target = pinnedTargets.get(key);
+    if (target) {
+      setTimeout(() => {
+        if (!pinnedTargets.has(key)) return;     // unpinned during wait
+        if (pool.has(key)) return;               // someone else reconnected
+        void warmupTarget(target);
+      }, WARMUP_RECONNECT_DELAY_MS);
+    }
   };
   inner.on("close", () => kill("close"));
   inner.on("end", () => kill("end"));
   inner.on("error", (err) => kill(`error: ${err?.message ?? "unknown"}`));
+}
+
+/**
+ * Open a connection in the background using only the auth methods
+ * that don't require user interaction (ssh-agent, private key, or
+ * the in-memory session-cached password). Used to warm up registered
+ * SSH datasets on activate and to auto-reconnect after a drop. If
+ * silent auth isn't possible we just give up — the next user action
+ * triggers the regular interactive `withSftp` path which can prompt.
+ */
+async function warmupTarget(target: SshTarget): Promise<void> {
+  const key = poolKey(target);
+  if (pool.has(key)) return;
+  if (pending.has(key)) return;
+  if (warmupInflight.has(key)) return;
+  warmupInflight.add(key);
+  try {
+    const sftp = await connectSilent(target);
+    if (!sftp) {
+      log(`SSH pool: warmup skipped for ${key} (no silent auth available)`);
+      return;
+    }
+    // Another acquire may have raced ahead while we were silent-
+    // connecting. If so, drop our session and let theirs win.
+    if (pool.has(key)) {
+      await sftp.end().catch(() => {});
+      return;
+    }
+    const entry: PoolEntry = { sftp, refs: 0, dead: false };
+    attachLifecycle(key, entry);
+    pool.set(key, entry);
+    log(`SSH pool: warmed up ${key}`);
+  } catch (err) {
+    log(`SSH pool: warmup failed for ${key}: ${(err as Error).message}`);
+  } finally {
+    warmupInflight.delete(key);
+  }
 }
 
 async function acquire(target: SshTarget): Promise<PoolEntry> {
@@ -141,41 +196,48 @@ export async function withSftp<T>(
       if (entry.refs === 0) {
         void entry.sftp.end().catch(() => {});
       }
-    } else if (entry.refs === 0 && !pinnedKeys.has(key)) {
+    } else if (entry.refs === 0 && !pinnedTargets.has(key)) {
       scheduleIdleClose(key, entry);
     }
   }
 }
 
 /**
- * Replace the set of "pinned" SSH targets — sessions that should stay
- * connected across idle periods. Call this whenever the set of
- * registered SSH datasets changes. Pinning is idempotent and lazy: we
- * never open a connection just because a target is pinned; we only
- * skip closing one that's already open.
+ * Replace the set of pinned SSH targets — sessions that should stay
+ * connected as long as the matching dataset is registered. Newly
+ * pinned targets get a fire-and-forget silent warm-up so the
+ * connection is ready before the user first touches the dataset.
+ * Unpinned targets revert to the usual 5-minute idle-close rule.
+ * The call is idempotent: running it with the same set twice is a
+ * no-op.
  */
 export function setPinnedTargets(targets: SshTarget[]): void {
-  const desired = new Set(targets.map(poolKey));
+  const desired = new Map(targets.map((t) => [poolKey(t), t]));
 
   // Newly unpinned → if currently idle, schedule the idle close that
   // pinning was suppressing.
-  for (const k of Array.from(pinnedKeys)) {
+  for (const k of Array.from(pinnedTargets.keys())) {
     if (desired.has(k)) continue;
-    pinnedKeys.delete(k);
+    pinnedTargets.delete(k);
     const entry = pool.get(k);
     if (entry && !entry.dead && entry.refs === 0 && !entry.idleTimer) {
       scheduleIdleClose(k, entry);
     }
   }
 
-  // Newly pinned → cancel any pending idle close.
-  for (const k of desired) {
-    if (pinnedKeys.has(k)) continue;
-    pinnedKeys.add(k);
+  // Newly pinned → cancel any pending idle close, then warm up in the
+  // background. Already-known pins update their stored SshTarget in
+  // case host / port / identityFile changed.
+  for (const [k, target] of desired) {
+    const wasNew = !pinnedTargets.has(k);
+    pinnedTargets.set(k, target);
     const entry = pool.get(k);
     if (entry?.idleTimer) {
       clearTimeout(entry.idleTimer);
       entry.idleTimer = undefined;
+    }
+    if (wasNew && !pool.has(k)) {
+      void warmupTarget(target);
     }
   }
 }
@@ -183,7 +245,8 @@ export function setPinnedTargets(targets: SshTarget[]): void {
 export async function disposeSshPool(): Promise<void> {
   const entries = Array.from(pool.values());
   pool.clear();
-  pinnedKeys.clear();
+  pinnedTargets.clear();
+  warmupInflight.clear();
   clearSessionPasswords();
   for (const e of entries) {
     if (e.idleTimer) {

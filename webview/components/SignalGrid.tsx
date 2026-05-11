@@ -60,6 +60,13 @@ export function SignalGrid({
     [actionSeries, cursorFrame, totalFrames],
   );
 
+  // Signals arrive in a separate message from the initial paint, so
+  // both being undefined means decode is still running. Treat empty
+  // arrays (decoded but no rows) as "no signals" rather than loading.
+  const loading = stateSeries === undefined && actionSeries === undefined;
+  if (loading) {
+    return <SignalsSkeleton />;
+  }
   if (dims === 0) {
     return (
       <div className="rounded-xl border border-dashed border-vscode-border p-6 text-center text-[12px] text-vscode-muted">
@@ -94,6 +101,37 @@ export function SignalGrid({
           />
         ))}
       </div>
+    </div>
+  );
+}
+
+function SignalsSkeleton() {
+  return (
+    <div className="pt-2">
+      <div className="mb-1 grid grid-cols-2 gap-x-3">
+        <ColumnHeader label="OBSERVATION.STATE" count={0} />
+        <ColumnHeader label="ACTION" count={0} />
+      </div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0">
+        {Array.from({ length: 16 }).map((_, i) => (
+          <SkeletonRow key={i} />
+        ))}
+      </div>
+      <div className="mt-3 text-center text-[11px] text-[color-mix(in_srgb,var(--vscode-foreground)_45%,transparent)]">
+        Decoding signals…
+      </div>
+    </div>
+  );
+}
+
+function SkeletonRow() {
+  return (
+    <div className="mb-1.5 h-[60px] animate-pulse overflow-hidden rounded-md bg-[color-mix(in_srgb,var(--vscode-foreground)_4%,transparent)]">
+      <div className="flex items-baseline justify-between px-2.5 pt-1.5 pb-1">
+        <span className="inline-block h-3 w-12 rounded bg-[color-mix(in_srgb,var(--vscode-foreground)_10%,transparent)]" />
+        <span className="inline-block h-3 w-10 rounded bg-[color-mix(in_srgb,var(--vscode-foreground)_10%,transparent)]" />
+      </div>
+      <div className="mx-2.5 h-[20px] rounded bg-[color-mix(in_srgb,var(--vscode-foreground)_5%,transparent)]" />
     </div>
   );
 }

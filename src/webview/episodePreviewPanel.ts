@@ -8,7 +8,7 @@ import type { DatasetService } from "../dataset/datasetService";
 import { readEpisodeSignals } from "../dataset/parquetReader";
 import { log, logError } from "../log";
 import { launchRerun } from "../rerun/rerunLauncher";
-import type { EpisodePreviewData, LeRobotEpisode } from "../types";
+import type { LeRobotEpisode } from "../types";
 import { BaseWebviewPanel } from "./baseWebviewPanel";
 import type { FromWebviewMessage } from "./protocol";
 
@@ -86,8 +86,16 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
   protected async onMessage(message: FromWebviewMessage): Promise<void> {
     switch (message.type) {
       case "ready": {
-        const data = await this.buildPreviewData();
-        this.post({ type: "init", data });
+        // Two-stage init: send everything-but-signals first so the
+        // webview can paint videos + meta immediately, then send
+        // signals once parquet decode finishes. Especially helps SSH
+        // datasets, where signal decode is gated on a multi-second
+        // shard download.
+        const snapshot = await this.service.getSnapshot(this.datasetId);
+        const meta = await this.buildMeta(snapshot);
+        this.post({ type: "init-meta", data: meta });
+        const signals = await this.buildSignals(snapshot);
+        this.post({ type: "init-signals", data: signals });
         return;
       }
       case "open-in-rerun": {
@@ -105,32 +113,24 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
     }
   }
 
-  private async buildPreviewData(): Promise<EpisodePreviewData> {
-    const snapshot = await this.service.getSnapshot(this.datasetId);
-    const cameras: EpisodePreviewData["cameras"] = [];
-    for (const key of snapshot.cameraKeys) {
-      const resolved = await resolveVideoUri(snapshot, this.episode, key);
-      if (!resolved) {
-        cameras.push({ key });
-        continue;
-      }
-      cameras.push({
-        key,
-        videoUri: this.panel.webview.asWebviewUri(resolved.uri).toString(),
-        shardFrameRange: resolved.location.shardFrameRange,
-        note: resolved.location.note,
-      });
-    }
-
-    const signals = await readEpisodeSignals(snapshot, this.episode);
+  private async buildMeta(snapshot: Awaited<ReturnType<DatasetService["getSnapshot"]>>) {
+    // Download/resolve video URIs in parallel so a multi-camera SSH
+    // dataset doesn't pay for sequential downloads.
+    const cameras = await Promise.all(
+      snapshot.cameraKeys.map(async (key) => {
+        const resolved = await resolveVideoUri(snapshot, this.episode, key);
+        if (!resolved) return { key };
+        return {
+          key,
+          videoUri: this.panel.webview.asWebviewUri(resolved.uri).toString(),
+          shardFrameRange: resolved.location.shardFrameRange,
+          note: resolved.location.note,
+        };
+      }),
+    );
     const rerunEnabled =
       vscode.workspace.getConfiguration("lerobotViewer").get<boolean>("enableRerun") ?? false;
     const episodeSplit = pickSplitForEpisode(snapshot.splits, this.episode.episodeIndex);
-
-    log(
-      `Preview built for ${snapshot.descriptor.name} ep ${this.episode.episodeIndex}: ` +
-        `${cameras.length} camera(s), state=${signals.state?.length ?? 0}f, action=${signals.action?.length ?? 0}f`,
-    );
 
     return {
       dataset: snapshot.descriptor,
@@ -138,6 +138,31 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
       info: snapshot.info,
       episode: this.episode,
       cameras,
+      stateNames: collectFeatureNames(snapshot.info.features, snapshot.stateKeys),
+      actionNames: collectFeatureNames(snapshot.info.features, snapshot.actionKeys),
+      velocityNames: collectFeatureNames(snapshot.info.features, snapshot.velocityKeys),
+      effortNames: collectFeatureNames(snapshot.info.features, snapshot.effortKeys),
+      environmentStateNames: collectFeatureNames(
+        snapshot.info.features,
+        snapshot.environmentStateKeys,
+      ),
+      rerunEnabled,
+      tasks: snapshot.tasks,
+      episodeLengths: snapshot.episodes.map((e) => e.length || 0),
+      totalEpisodes: snapshot.info.totalEpisodes,
+      stats: snapshot.stats,
+      splits: snapshot.splits,
+      episodeSplit,
+    };
+  }
+
+  private async buildSignals(snapshot: Awaited<ReturnType<DatasetService["getSnapshot"]>>) {
+    const signals = await readEpisodeSignals(snapshot, this.episode);
+    log(
+      `Preview signals for ${snapshot.descriptor.name} ep ${this.episode.episodeIndex}: ` +
+        `state=${signals.state?.length ?? 0}f, action=${signals.action?.length ?? 0}f`,
+    );
+    return {
       state: signals.state,
       action: signals.action,
       velocity: signals.velocity,
@@ -148,22 +173,7 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
       success: signals.success,
       truncated: signals.truncated,
       taskIndices: signals.taskIndices,
-      stateNames: collectFeatureNames(snapshot.info.features, snapshot.stateKeys),
-      actionNames: collectFeatureNames(snapshot.info.features, snapshot.actionKeys),
-      velocityNames: collectFeatureNames(snapshot.info.features, snapshot.velocityKeys),
-      effortNames: collectFeatureNames(snapshot.info.features, snapshot.effortKeys),
-      environmentStateNames: collectFeatureNames(
-        snapshot.info.features,
-        snapshot.environmentStateKeys,
-      ),
       signalsWarning: signals.warning,
-      rerunEnabled,
-      tasks: snapshot.tasks,
-      episodeLengths: snapshot.episodes.map((e) => e.length || 0),
-      totalEpisodes: snapshot.info.totalEpisodes,
-      stats: snapshot.stats,
-      splits: snapshot.splits,
-      episodeSplit,
     };
   }
 }

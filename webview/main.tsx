@@ -53,8 +53,27 @@ function Root() {
 
   useEffect(() => {
     const off = bridge.onMessage((msg) => {
-      if (msg.type === "init") setView({ kind: "episode", data: msg.data });
-      else if (msg.type === "init-metadata") setView({ kind: "metadata", data: msg.data });
+      if (msg.type === "init") {
+        setView({ kind: "episode", data: msg.data });
+      } else if (msg.type === "init-meta") {
+        // Stage 1 of two-stage init: paint the page with everything we
+        // know so far. Signal series are filled in by init-signals.
+        setView((prev) => {
+          const merged: EpisodePreviewData = {
+            ...(prev?.kind === "episode" ? prev.data : EMPTY_PREVIEW),
+            ...msg.data,
+          };
+          return { kind: "episode", data: merged };
+        });
+      } else if (msg.type === "init-signals") {
+        setView((prev) =>
+          prev?.kind === "episode"
+            ? { kind: "episode", data: { ...prev.data, ...msg.data } }
+            : prev,
+        );
+      } else if (msg.type === "init-metadata") {
+        setView({ kind: "metadata", data: msg.data });
+      }
     });
     bridge.postMessage({ type: "ready" });
     return () => off();
@@ -64,6 +83,24 @@ function Root() {
   if (view.kind === "metadata") return <MetadataView initial={view.data} />;
   return <App initial={view.data} />;
 }
+
+// Placeholder used when init-meta arrives before any other state. All
+// fields are filled in by the message itself; we only need the
+// signal-series fields to start as undefined so the SignalGrid shows
+// its loading state until init-signals arrives.
+const EMPTY_PREVIEW: EpisodePreviewData = {
+  dataset: { id: "", name: "", source: "manual" },
+  version: "unknown",
+  info: { fps: 30, totalEpisodes: 0, totalFrames: 0, features: {}, raw: {} },
+  episode: { episodeIndex: 0, tasks: [], length: 0 },
+  cameras: [],
+  rerunEnabled: false,
+  tasks: [],
+  episodeLengths: [],
+  totalEpisodes: 0,
+  stats: {},
+  splits: {},
+};
 
 try {
   const container = document.getElementById("root");

@@ -89,7 +89,15 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
 
   useEffect(() => {
     const off = bridge.onMessage((msg) => {
-      if (msg.type === "init") setData(msg.data);
+      if (msg.type === "init") {
+        setData(msg.data);
+      } else if (msg.type === "init-meta") {
+        // Stage 1 — paint videos + meta now, keep any existing
+        // signals around (Root passes us a stitched merge).
+        setData((prev) => ({ ...prev, ...msg.data }));
+      } else if (msg.type === "init-signals") {
+        setData((prev) => ({ ...prev, ...msg.data }));
+      }
     });
     return () => off();
   }, [bridge]);

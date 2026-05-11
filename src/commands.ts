@@ -10,7 +10,13 @@ import type { DatasetTreeProvider, EpisodeNode, DatasetNode } from "./providers/
 import type { EpisodePreviewPanelManager } from "./webview/episodePreviewPanel";
 import type { MetadataViewerPanelManager } from "./webview/metadataViewerPanel";
 import { isValidRepoId } from "./dataset/huggingface";
-import { parseSshConfig, pickRemoteFolder, probeRemoteDataset } from "./dataset/ssh";
+import {
+  findRemoteDatasets,
+  parseSshConfig,
+  pickRemoteFolder,
+  sshDatasetId,
+} from "./dataset/ssh";
+import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
 import { log } from "./log";
 import type { SshTarget } from "./types";
@@ -76,9 +82,30 @@ export function registerCommands(
   });
 
   reg(CommandIds.addSshDataset, async () => {
-    const target = await runSshWizard();
-    if (!target) return;
-    await service.addSshDataset(target);
+    const targets = await runSshWizard();
+    if (!targets || targets.length === 0) return;
+
+    const existing = new Set(service.list().map((d) => d.id));
+    let added = 0;
+    let skipped = 0;
+    for (const t of targets) {
+      if (existing.has(sshDatasetId(t))) {
+        skipped++;
+        continue;
+      }
+      const desc = await service.addSshDataset(t);
+      if (desc) {
+        existing.add(desc.id);
+        added++;
+      }
+    }
+    if (added > 0) {
+      const note =
+        skipped > 0
+          ? `Added ${added} SSH dataset${added === 1 ? "" : "s"} (${skipped} already registered)`
+          : `Added ${added} SSH dataset${added === 1 ? "" : "s"}`;
+      void vscode.window.showInformationMessage(note);
+    }
   });
 
   reg(CommandIds.removeDataset, (...args: unknown[]) => {
@@ -190,7 +217,7 @@ async function pickEpisode(service: DatasetService): Promise<PreviewArgs | undef
   return { datasetId: datasetPick.id, episodeIndex: episodePick.idx };
 }
 
-async function runSshWizard(): Promise<SshTarget | undefined> {
+async function runSshWizard(): Promise<SshTarget[] | undefined> {
   // Step 1: pick a host alias from ~/.ssh/config or enter manually.
   const aliases = await parseSshConfig();
   const ENTER = "$enter$";
@@ -248,20 +275,40 @@ async function runSshWizard(): Promise<SshTarget | undefined> {
   );
   if (!remotePath) return undefined;
 
-  // Step 3: probe.
+  // Step 3: scan from the picked path for every LeRobot dataset there.
+  // We always scan (root is included), so a folder that is itself a
+  // dataset still matches, and any nested datasets are picked up too.
+  // No "this isn't a dataset" error — empty results just mean nothing
+  // to add. Real connection errors (auth/network) still surface.
   const fullTarget: SshTarget = { ...target, remotePath: remotePath.trim() };
-  const probe = await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: `Connecting to ${fullTarget.user ? `${fullTarget.user}@` : ""}${fullTarget.host}…`,
-    },
-    () => probeRemoteDataset(fullTarget),
-  );
-  if (!probe.ok) {
-    vscode.window.showErrorMessage(`SSH probe failed: ${probe.reason ?? "unknown error"}`);
+  const root = fullTarget.remotePath;
+  let found: string[];
+  try {
+    found = await vscode.window.withProgress<string[]>(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Scanning ${root} for LeRobot datasets`,
+        cancellable: true,
+      },
+      (progress, token) =>
+        findRemoteDatasets(fullTarget, root, token, (p) =>
+          progress.report({
+            message: `found ${p.found} · scanned ${p.scanned} · ${shortenSshProgress(p.currentDir, root)}`,
+          }),
+        ),
+    );
+  } catch (err) {
+    vscode.window.showErrorMessage(`SSH scan failed: ${(err as Error).message}`);
     return undefined;
   }
-  return fullTarget;
+
+  return found.map((p) => ({ ...fullTarget, remotePath: p }));
+}
+
+function shortenSshProgress(full: string, root: string): string {
+  const rel = posix.relative(root, full);
+  const display = rel.length === 0 ? "." : rel;
+  return display.length > 60 ? "…" + display.slice(-58) : display;
 }
 
 function parseUserHostPort(raw: string): Omit<SshTarget, "remotePath"> {

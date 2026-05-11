@@ -83,20 +83,63 @@ export class DatasetService implements vscode.Disposable {
     }
   }
 
-  async addLocalFolder(uri: vscode.Uri): Promise<DatasetDescriptor | undefined> {
-    if (!(await isLeRobotDataset(uri.fsPath))) {
-      vscode.window.showErrorMessage(
-        `Folder is not a LeRobot dataset (missing meta/info.json): ${uri.fsPath}`,
+  /**
+   * Add every LeRobot dataset found under `uri`. The picked folder is
+   * itself checked first, then a bounded BFS recurses inside (including
+   * past nested datasets, while pruning their data/videos/meta
+   * chunks). Datasets already registered are silently skipped; a
+   * folder containing no datasets is also a no-op (no error toast),
+   * matching the "just figure it out" UX. Returns the descriptors that
+   * were freshly added.
+   */
+  async addLocalFolder(uri: vscode.Uri): Promise<DatasetDescriptor[]> {
+    const found = await vscode.window.withProgress<string[]>(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Scanning ${uri.fsPath} for LeRobot datasets`,
+        cancellable: true,
+      },
+      (progress, token) =>
+        findLocalDatasets(uri.fsPath, token, (state) =>
+          progress.report({
+            message: `found ${state.found} · scanned ${state.scanned} · ${shortenLocalProgress(state.currentDir, uri.fsPath)}`,
+          }),
+        ),
+    );
+
+    // Dedupe by root path, not just id, so a folder discovered by
+    // workspace auto-scan (id "workspace:…") doesn't get re-added as a
+    // manual entry with id "local:…" pointing at the same physical
+    // path. Whatever covers a path first wins.
+    const existingRoots = new Set(
+      this.descriptors.map((d) => d.root).filter((r): r is string => !!r),
+    );
+    const added: DatasetDescriptor[] = [];
+    let skipped = 0;
+    for (const p of found) {
+      if (existingRoots.has(p)) {
+        skipped++;
+        continue;
+      }
+      existingRoots.add(p);
+      added.push(
+        this.upsert({
+          id: `local:${p}`,
+          name: path.basename(p),
+          root: p,
+          source: "manual",
+        }),
       );
-      return undefined;
     }
-    const descriptor: DatasetDescriptor = {
-      id: `local:${uri.fsPath}`,
-      name: path.basename(uri.fsPath),
-      root: uri.fsPath,
-      source: "manual",
-    };
-    return this.upsert(descriptor);
+
+    if (added.length > 0) {
+      const note =
+        skipped > 0
+          ? `Added ${added.length} LeRobot dataset${added.length === 1 ? "" : "s"} (${skipped} already registered)`
+          : `Added ${added.length} LeRobot dataset${added.length === 1 ? "" : "s"}`;
+      void vscode.window.showInformationMessage(note);
+    }
+    return added;
   }
 
   async addSshDataset(target: SshTarget): Promise<DatasetDescriptor | undefined> {
@@ -150,24 +193,38 @@ export class DatasetService implements vscode.Disposable {
     const config = vscode.workspace.getConfiguration("lerobotViewer");
     const maxDepth = config.get<number>("workspaceScanDepth") ?? 3;
     const folders = vscode.workspace.workspaceFolders ?? [];
+
+    // Paths already covered by manual / HF / SSH entries; we won't
+    // double-register them under a workspace: id.
+    const claimedRoots = new Set(
+      this.descriptors
+        .filter((d) => d.source !== "workspace")
+        .map((d) => d.root)
+        .filter((r): r is string => !!r),
+    );
+
     const found: DatasetDescriptor[] = [];
     for (const folder of folders) {
       await walk(folder.uri.fsPath, maxDepth, async (dir) => {
         if (await isLeRobotDataset(dir)) {
-          found.push({
-            id: `workspace:${dir}`,
-            name: path.basename(dir),
-            root: dir,
-            source: "workspace",
-          });
+          if (!claimedRoots.has(dir)) {
+            claimedRoots.add(dir);
+            found.push({
+              id: `workspace:${dir}`,
+              name: path.basename(dir),
+              root: dir,
+              source: "workspace",
+            });
+          }
           return "skip-children";
         }
         return "continue";
       });
     }
 
-    // Reconcile: keep manual + HF entries; replace workspace entries with the
-    // freshly-discovered set so removed folders disappear.
+    // Reconcile: keep manual + HF + SSH entries; replace workspace
+    // entries with the freshly-discovered set so removed folders
+    // disappear.
     const nonWorkspace = this.descriptors.filter((d) => d.source !== "workspace");
     this.descriptors = dedupeById([...nonWorkspace, ...found]);
     this.persist();
@@ -220,6 +277,85 @@ function dedupeById(items: DatasetDescriptor[]): DatasetDescriptor[] {
     seen.add(d.id);
     return true;
   });
+}
+
+// Bounded local BFS used as a fallback when the user picks a folder
+// that isn't itself a dataset. Mirrors the SSH scan's behavior so the
+// two flows feel the same: depth-limited, skips noise dirs, recurses
+// past dataset boundaries to catch nested datasets, but prunes the
+// dataset's own internal layout (data/videos/images/meta) to avoid
+// burning time on chunk subdirs.
+
+const LOCAL_SCAN_MAX_DEPTH = 4;
+const LOCAL_SCAN_MAX_RESULTS = 100;
+const LOCAL_SCAN_MAX_DIRS = 5000;
+const DATASET_INTERNAL_DIRS = new Set(["data", "videos", "images", "meta"]);
+
+interface LocalScanState {
+  scanned: number;
+  found: number;
+  currentDir: string;
+}
+
+async function findLocalDatasets(
+  rootDir: string,
+  token: vscode.CancellationToken,
+  onProgress: (s: LocalScanState) => void,
+): Promise<string[]> {
+  const found: string[] = [];
+  let level: Array<{ dir: string; insideDataset: boolean }> = [
+    { dir: rootDir, insideDataset: false },
+  ];
+  let depth = 0;
+  let scanned = 0;
+
+  const shouldStop = (): boolean =>
+    token.isCancellationRequested ||
+    found.length >= LOCAL_SCAN_MAX_RESULTS ||
+    scanned >= LOCAL_SCAN_MAX_DIRS;
+
+  while (level.length > 0 && depth <= LOCAL_SCAN_MAX_DEPTH) {
+    if (shouldStop()) break;
+    const nextLevel: typeof level = [];
+
+    for (const item of level) {
+      if (shouldStop()) break;
+      scanned++;
+      const isDs = await isLeRobotDataset(item.dir);
+      if (isDs && found.length < LOCAL_SCAN_MAX_RESULTS) found.push(item.dir);
+      onProgress({ scanned, found: found.length, currentDir: item.dir });
+
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = await fs.readdir(item.dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      const childInsideDataset = isDs || item.insideDataset;
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        if (e.name.startsWith(".")) continue;
+        if (SKIP_DIR_NAMES.has(e.name)) continue;
+        if (childInsideDataset && DATASET_INTERNAL_DIRS.has(e.name)) continue;
+        nextLevel.push({
+          dir: path.join(item.dir, e.name),
+          insideDataset: childInsideDataset,
+        });
+      }
+    }
+
+    level = nextLevel;
+    depth++;
+  }
+
+  return found;
+}
+
+function shortenLocalProgress(full: string, root: string): string {
+  const rel = path.relative(root, full);
+  const display = rel.length === 0 ? "." : rel;
+  return display.length > 60 ? "…" + display.slice(-58) : display;
 }
 
 type WalkDecision = "continue" | "skip-children";

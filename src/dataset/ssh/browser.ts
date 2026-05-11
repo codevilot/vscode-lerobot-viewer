@@ -3,12 +3,16 @@
 // up/down, confirm the current folder, or fall back to typing a path
 // manually. The current folder gets a "looks like a LeRobot dataset"
 // hint when it already contains meta/info.json.
+//
+// The session is borrowed from the SSH pool, so the same connection
+// also serves the probe + initial fetch that run right after the user
+// picks a folder — no second password prompt.
 
 import * as posix from "node:path/posix";
 import type SftpClient from "ssh2-sftp-client";
 import * as vscode from "vscode";
 import type { SshTarget } from "../../types";
-import { connectWithRetry } from "./connection";
+import { withSftp } from "./pool";
 
 interface PickAction {
   kind: "navigate" | "select" | "manual";
@@ -18,9 +22,9 @@ interface PickAction {
 export async function pickRemoteFolder(
   target: Omit<SshTarget, "remotePath">,
 ): Promise<string | undefined> {
-  let sftp: SftpClient | undefined;
-  try {
-    sftp = await connectWithRetry({ ...target, remotePath: "/" });
+  // remotePath is a no-op for the pool key but required by SshTarget;
+  // any placeholder works — operations explicitly pass absolute paths.
+  return withSftp({ ...target, remotePath: "/" }, async (sftp) => {
     let cwd = await sftp.realPath(".").catch(() => "/");
     if (!cwd.startsWith("/")) cwd = "/" + cwd;
 
@@ -41,13 +45,7 @@ export async function pickRemoteFolder(
       }
       cwd = action.path;
     }
-  } finally {
-    try {
-      await sftp?.end();
-    } catch {
-      // ignore
-    }
-  }
+  });
 }
 
 async function runFolderPicker(sftp: SftpClient, dir: string): Promise<PickAction | undefined> {

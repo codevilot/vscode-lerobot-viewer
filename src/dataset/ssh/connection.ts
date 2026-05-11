@@ -1,6 +1,10 @@
 // SSH/SFTP connection + auth retry. Talks to vscode for password prompts
 // but holds no domain state — callers pass an SshTarget and get a
 // connected SftpClient (or a friendly error).
+//
+// withSftp() now delegates to the pool in ./pool so that multiple
+// operations on the same target share one live session and only prompt
+// for credentials once.
 
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -9,6 +13,7 @@ import * as vscode from "vscode";
 import { log } from "../../log";
 import type { SshTarget } from "../../types";
 import { findDefaultIdentityFile } from "./config";
+import { withSftp as withPooledSftp } from "./pool";
 
 interface ConnectOptions extends SshTarget {
   /** Optional passphrase or password from a prior prompt. */
@@ -16,25 +21,16 @@ interface ConnectOptions extends SshTarget {
 }
 
 /**
- * Run `fn` with a freshly connected SFTP client; always disconnects.
- * Auth retries (up to 3 passphrase / password attempts) live one layer
- * below this — by the time we're inside `fn`, we have a usable client.
+ * Borrow a pooled, connected SFTP client for the duration of `fn`. The
+ * client is NOT disconnected when fn returns — it stays in the pool to
+ * be reused, and gets closed by idle timeout (or by lifecycle eviction
+ * if the underlying SSH session dies).
  */
 export async function withSftp<T>(
   target: SshTarget,
   fn: (sftp: SftpClient) => Promise<T>,
 ): Promise<T> {
-  let sftp: SftpClient | undefined;
-  try {
-    sftp = await connectWithRetry(target);
-    return await fn(sftp);
-  } finally {
-    try {
-      await sftp?.end();
-    } catch {
-      // ignore disconnect errors
-    }
-  }
+  return withPooledSftp(target, fn);
 }
 
 /**
@@ -76,6 +72,12 @@ async function connect(opts: ConnectOptions): Promise<SftpClient> {
     // PasswordAuthentication is wrapped in challenge-response) still
     // accept our password.
     tryKeyboard: true,
+    // Keep idle pooled sessions alive across server-side inactivity
+    // timeouts. ssh2 will send a global keepalive every 15s and tear
+    // the connection down after 3 missed replies; the pool listens for
+    // that close and evicts the dead entry.
+    keepaliveInterval: 15_000,
+    keepaliveCountMax: 3,
   };
 
   // Populate every available auth channel; ssh2 will try them in order:

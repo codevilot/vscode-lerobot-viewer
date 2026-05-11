@@ -5,6 +5,7 @@
 import * as vscode from "vscode";
 import { registerCommands } from "./commands";
 import { DatasetService } from "./dataset/datasetService";
+import { disposeSshPool } from "./dataset/ssh/pool";
 import { DatasetTreeProvider } from "./providers/datasetTreeProvider";
 import { EpisodePreviewPanelManager } from "./webview/episodePreviewPanel";
 import { MetadataViewerPanelManager } from "./webview/metadataViewerPanel";
@@ -49,6 +50,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 }
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
   log("LeRobot Viewer deactivating");
+  await disposeSshPool();
 }

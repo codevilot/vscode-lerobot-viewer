@@ -87,14 +87,26 @@ export async function readEpisodeSignals(
     const requested = [...allMatrixCols, ...scalarColumns];
     if (filterByEpisode) requested.push("episode_index");
 
+    // For v3.0 shards (which pack multiple episodes), only decode the
+    // shard rows the adapter says belong to this episode. Without
+    // this we'd pay full-shard decode cost for every episode in a
+    // 10-episode shard. v2.x stores one episode per file so the
+    // range is the whole file.
+    const range =
+      filterByEpisode && episode.frameRange
+        ? { rowStart: episode.frameRange[0], rowEnd: episode.frameRange[1] }
+        : undefined;
+
     const rows = (await parquetReadObjects({
       file: buffer,
       columns: requested,
+      ...range,
     })) as Record<string, unknown>[];
 
-    const matching = filterByEpisode
-      ? rows.filter((r) => toNumber(r.episode_index) === episode.episodeIndex)
-      : rows;
+    const matching =
+      filterByEpisode && !range
+        ? rows.filter((r) => toNumber(r.episode_index) === episode.episodeIndex)
+        : rows;
 
     if (matching.length === 0) {
       return {

@@ -40,19 +40,80 @@ export async function withSftp<T>(
  * tells them how to use ssh-agent.
  */
 export async function connectWithRetry(target: SshTarget): Promise<SftpClient> {
+  const credKey = sessionCredKey(target);
   let lastErr: Error | undefined;
   for (let attempt = 0; attempt < 4; attempt++) {
+    let usedCached = false;
     try {
-      const password =
-        attempt === 0 ? undefined : await promptForPassword(target, attempt, lastErr);
-      if (attempt > 0 && !password) throw lastErr ?? new Error("Cancelled");
-      return await connect(password ? { ...target, password } : target);
+      let password: string | undefined;
+      if (attempt === 0) {
+        // First attempt: rely on ssh-agent / key auth, but also feed
+        // in the session-cached password if we already have one for
+        // this target. That makes silent reconnects after a transient
+        // socket drop (network blip, server idle hangup) no-prompt.
+        password = sessionPasswords.get(credKey);
+        usedCached = password !== undefined;
+      } else {
+        password = await promptForPassword(target, attempt, lastErr);
+        if (!password) throw lastErr ?? new Error("Cancelled");
+      }
+      const sftp = await connect(password ? { ...target, password } : target);
+      // Remember any password the user just typed so future reconnects
+      // for the same target can skip the prompt. Kept in memory only;
+      // cleared when the extension deactivates.
+      if (password && !usedCached) sessionPasswords.set(credKey, password);
+      return sftp;
     } catch (err) {
       lastErr = err as Error;
       if (!isAuthError(lastErr.message ?? "")) throw lastErr;
+      // A cached password that just failed is stale — drop it so the
+      // next attempt falls through to a fresh prompt.
+      if (usedCached) sessionPasswords.delete(credKey);
     }
   }
   throw new Error(buildAuthFailureMessage(target, lastErr));
+}
+
+// In-memory cache of passwords / passphrases the user has typed this
+// session. Keyed on (user, host, port, identityFile); never persisted.
+const sessionPasswords = new Map<string, string>();
+
+function sessionCredKey(t: SshTarget): string {
+  return `${t.user ?? ""}@${t.host}:${t.port ?? 22}|${t.identityFile ?? ""}`;
+}
+
+/** Wipe the in-memory password cache. Called on extension deactivate. */
+export function clearSessionPasswords(): void {
+  sessionPasswords.clear();
+}
+
+/**
+ * Try to connect once, silently. Uses ssh-agent / private key / the
+ * session-cached password (if any). On auth failure returns undefined
+ * — the caller can fall back to the interactive `connectWithRetry`
+ * when a user action makes prompting acceptable. Non-auth errors
+ * (network / timeout / dns) propagate so callers can decide what to
+ * do about them.
+ *
+ * Used by the pool's warm-up + auto-reconnect paths so connections
+ * to registered SSH datasets can be established / re-established in
+ * the background without ever surprising the user with a password
+ * box.
+ */
+export async function connectSilent(target: SshTarget): Promise<SftpClient | undefined> {
+  const credKey = sessionCredKey(target);
+  const cached = sessionPasswords.get(credKey);
+  try {
+    return await connect(cached ? { ...target, password: cached } : target);
+  } catch (err) {
+    if (isAuthError((err as Error).message ?? "")) {
+      // Stale cached password? Drop it so the next interactive try
+      // starts clean.
+      if (cached) sessionPasswords.delete(credKey);
+      return undefined;
+    }
+    throw err;
+  }
 }
 
 function isAuthError(message: string): boolean {

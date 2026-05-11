@@ -33,6 +33,7 @@ export const CommandIds = {
   refresh: "lerobotViewer.refresh",
   scanWorkspace: "lerobotViewer.scanWorkspace",
   revealInExplorer: "lerobotViewer.revealInExplorer",
+  cleanSshCache: "lerobotViewer.cleanSshCache",
 } as const;
 
 interface PreviewArgs {
@@ -121,6 +122,22 @@ export function registerCommands(
 
   reg(CommandIds.scanWorkspace, async () => {
     await service.scanWorkspace();
+  });
+
+  reg(CommandIds.cleanSshCache, async () => {
+    const choice = await vscode.window.showWarningMessage(
+      "Delete every cached SSH dataset file? Currently registered datasets will need to re-download their meta on next open.",
+      { modal: true },
+      "Delete cache",
+    );
+    if (choice !== "Delete cache") return;
+    const { removed, total } = await service.cleanAllSshCaches();
+    void vscode.window.showInformationMessage(
+      total === 0
+        ? "No SSH cache to clean."
+        : `Cleaned ${removed}/${total} SSH cache director${total === 1 ? "y" : "ies"}.`,
+    );
+    tree.refresh();
   });
 
   reg(CommandIds.openMetadata, async (...args: unknown[]) => {

@@ -17,9 +17,22 @@ import { log, logError } from "../log";
 import type { DatasetDescriptor, DatasetSnapshot, SshTarget } from "../types";
 import { ensureHuggingFaceDataset } from "./huggingface";
 import { isLeRobotDataset, loadDataset } from "./datasetLoader";
-import { fetchSshDataset, sshCacheRoot } from "./ssh";
+import {
+  fetchSshDataset,
+  setPinnedTargets,
+  sshCacheDir,
+  sshCacheRoot,
+  SSH_CACHE_LAST_ACCESS,
+} from "./ssh";
 
 const STATE_KEY = "lerobotViewer.descriptors";
+
+// SSH cache dirs untouched for this long get wiped on activate, even
+// if their dataset is still registered. The descriptor stays in the
+// tree; the next open just re-downloads meta. 1 day matches the
+// user's expectation of "if I haven't used it today, I don't need
+// the cache lying around."
+const STALE_CACHE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const SKIP_DIR_NAMES = new Set([
   "node_modules",
   ".git",
@@ -42,6 +55,11 @@ export class DatasetService implements vscode.Disposable {
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.descriptors = this.readPersisted();
+    this.refreshSshPins();
+    // Background cache maintenance, both fire-and-forget. Errors are
+    // never fatal — caches just won't be cleaned up this session.
+    void this.cleanOrphanSshCaches();
+    void this.cleanStaleSshCaches();
   }
 
   list(): DatasetDescriptor[] {
@@ -180,11 +198,24 @@ export class DatasetService implements vscode.Disposable {
 
   remove(id: string): void {
     const before = this.descriptors.length;
+    const removed = this.descriptors.find((d) => d.id === id);
     this.descriptors = this.descriptors.filter((d) => d.id !== id);
     this.snapshotCache.delete(id);
     if (this.descriptors.length !== before) {
       this.persist();
+      this.refreshSshPins();
       this._onDidChange.fire();
+      if (removed?.source === "ssh" && removed.ssh) {
+        // The user explicitly dropped this SSH dataset — its cache
+        // (downloaded meta + per-episode files) is no longer
+        // referenced by anything in the tree, so reclaim the disk
+        // space. Fire-and-forget; not having the cache around just
+        // means a slightly slower re-add later.
+        const dir = sshCacheDir(sshCacheRoot(this.context), removed.ssh);
+        void fs.rm(dir, { recursive: true, force: true }).catch((err) => {
+          logError(`removing SSH cache ${dir}`, err);
+        });
+      }
     }
   }
 
@@ -247,8 +278,171 @@ export class DatasetService implements vscode.Disposable {
     }
     this.snapshotCache.delete(descriptor.id);
     this.persist();
+    this.refreshSshPins();
     this._onDidChange.fire();
     return descriptor;
+  }
+
+  /**
+   * Tell the SSH connection pool which targets correspond to currently
+   * registered datasets, so their sessions can stay alive past the
+   * idle timeout. Called whenever the descriptor list mutates.
+   */
+  private refreshSshPins(): void {
+    const targets = this.descriptors
+      .filter((d) => d.source === "ssh" && d.ssh)
+      .map((d) => d.ssh!);
+    setPinnedTargets(targets);
+  }
+
+  /**
+   * Sweep the SSH cache root and delete every (host, path) directory
+   * that doesn't map to a currently registered SSH dataset. Run once
+   * on activate; cheap because we only stat top two directory levels.
+   */
+  private async cleanOrphanSshCaches(): Promise<void> {
+    const cacheRoot = sshCacheRoot(this.context);
+    let hostDirs: string[];
+    try {
+      hostDirs = await fs.readdir(cacheRoot);
+    } catch {
+      return;
+    }
+    const registered = new Set(
+      this.descriptors
+        .filter((d) => d.source === "ssh" && d.ssh)
+        .map((d) => sshCacheDir(cacheRoot, d.ssh!)),
+    );
+    let removed = 0;
+    for (const host of hostDirs) {
+      const hostPath = path.join(cacheRoot, host);
+      let pathDirs: string[];
+      try {
+        const stat = await fs.stat(hostPath);
+        if (!stat.isDirectory()) continue;
+        pathDirs = await fs.readdir(hostPath);
+      } catch {
+        continue;
+      }
+      for (const p of pathDirs) {
+        const full = path.join(hostPath, p);
+        if (registered.has(full)) continue;
+        try {
+          await fs.rm(full, { recursive: true, force: true });
+          removed++;
+          log(`Cleaned orphan SSH cache: ${full}`);
+        } catch (err) {
+          logError(`cleaning orphan SSH cache ${full}`, err);
+        }
+      }
+      // Collapse now-empty host dir.
+      try {
+        const remaining = await fs.readdir(hostPath);
+        if (remaining.length === 0) await fs.rmdir(hostPath);
+      } catch {
+        // ignore
+      }
+    }
+    if (removed > 0) log(`SSH cache: cleaned ${removed} orphan dir(s)`);
+  }
+
+  /**
+   * Delete cached SSH dataset directories that haven't been touched
+   * within STALE_CACHE_THRESHOLD_MS. "Touched" means a successful
+   * fetchSshDataset / ensureSshFile call refreshed the cache root's
+   * `.last-access` sentinel; cache dirs older than that lose their
+   * meta + downloaded files (the descriptor stays in the tree, so
+   * the next open just re-downloads).
+   *
+   * Runs in the background on activate. Legacy caches (older than
+   * this feature) get a sentinel written on first sight rather than
+   * being instantly deleted, so users don't lose data on the upgrade.
+   */
+  private async cleanStaleSshCaches(): Promise<void> {
+    const cacheRoot = sshCacheRoot(this.context);
+    const now = Date.now();
+    let removed = 0;
+    for (const d of this.descriptors) {
+      if (d.source !== "ssh" || !d.ssh) continue;
+      const dir = sshCacheDir(cacheRoot, d.ssh);
+      const sentinel = path.join(dir, SSH_CACHE_LAST_ACCESS);
+      let mtime: number;
+      try {
+        const stat = await fs.stat(sentinel);
+        mtime = stat.mtimeMs;
+      } catch {
+        // No sentinel yet. Treat this as a freshly-discovered cache —
+        // write the sentinel with the current time and skip deletion.
+        try {
+          await fs.writeFile(sentinel, "");
+        } catch {
+          // ignore
+        }
+        continue;
+      }
+      if (now - mtime <= STALE_CACHE_THRESHOLD_MS) continue;
+      try {
+        await fs.rm(dir, { recursive: true, force: true });
+        this.snapshotCache.delete(d.id);
+        removed++;
+        log(
+          `SSH cache: removed stale ${dir} (idle for ${Math.round((now - mtime) / 3_600_000)}h)`,
+        );
+      } catch (err) {
+        logError(`cleaning stale SSH cache ${dir}`, err);
+      }
+    }
+    if (removed > 0) log(`SSH cache: cleaned ${removed} stale dir(s)`);
+  }
+
+  /**
+   * Manually clear every SSH cache directory under globalStorage.
+   * Triggered by the "Clean SSH cache" command. Currently-registered
+   * datasets keep their entries in the tree but lose their cached
+   * meta — the next open re-downloads from the remote.
+   */
+  async cleanAllSshCaches(): Promise<{ removed: number; total: number }> {
+    const cacheRoot = sshCacheRoot(this.context);
+    let hostDirs: string[];
+    try {
+      hostDirs = await fs.readdir(cacheRoot);
+    } catch {
+      return { removed: 0, total: 0 };
+    }
+    let total = 0;
+    let removed = 0;
+    for (const host of hostDirs) {
+      const hostPath = path.join(cacheRoot, host);
+      let pathDirs: string[];
+      try {
+        const stat = await fs.stat(hostPath);
+        if (!stat.isDirectory()) continue;
+        pathDirs = await fs.readdir(hostPath);
+      } catch {
+        continue;
+      }
+      for (const p of pathDirs) {
+        total++;
+        const full = path.join(hostPath, p);
+        try {
+          await fs.rm(full, { recursive: true, force: true });
+          removed++;
+        } catch (err) {
+          logError(`cleaning SSH cache ${full}`, err);
+        }
+      }
+      try {
+        const remaining = await fs.readdir(hostPath);
+        if (remaining.length === 0) await fs.rmdir(hostPath);
+      } catch {
+        // ignore
+      }
+    }
+    // Invalidate every cached snapshot — their roots no longer have
+    // meta on disk.
+    this.snapshotCache.clear();
+    log(`SSH cache: cleaned ${removed}/${total} dir(s) on manual sweep`);
+    return { removed, total };
   }
 
   private readPersisted(): DatasetDescriptor[] {

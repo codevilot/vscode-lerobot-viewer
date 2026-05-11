@@ -6,8 +6,45 @@
 
 import type { DatasetMetadataView, EpisodePreviewData } from "../types";
 
+/**
+ * Subset of EpisodePreviewData that can be computed without parquet
+ * decoding. Sent as the first frame so the webview can paint videos
+ * and metadata while the heavier signal decode is still running.
+ */
+export type EpisodePreviewMeta = Omit<
+  EpisodePreviewData,
+  | "state"
+  | "action"
+  | "velocity"
+  | "effort"
+  | "environmentState"
+  | "reward"
+  | "done"
+  | "success"
+  | "truncated"
+  | "taskIndices"
+  | "signalsWarning"
+>;
+
+export type EpisodePreviewSignals = Pick<
+  EpisodePreviewData,
+  | "state"
+  | "action"
+  | "velocity"
+  | "effort"
+  | "environmentState"
+  | "reward"
+  | "done"
+  | "success"
+  | "truncated"
+  | "taskIndices"
+  | "signalsWarning"
+>;
+
 export type FromExtensionMessage =
   | { type: "init"; data: EpisodePreviewData }
+  | { type: "init-meta"; data: EpisodePreviewMeta }
+  | { type: "init-signals"; data: EpisodePreviewSignals }
   | { type: "init-metadata"; data: DatasetMetadataView }
   | { type: "telemetry/log"; level: "info" | "warn" | "error"; message: string };
 

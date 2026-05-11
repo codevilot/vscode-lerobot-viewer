@@ -8,14 +8,10 @@
 import { getBridge } from "./vscode";
 
 export interface PreviewUiState {
-  /** Width in px of the right MetadataPanel sidebar. */
+  /** Width in px of the right SignalGrid sidebar. */
   asideWidth?: number;
-  /** Height in px applied to every SignalGraph chart area. */
-  signalHeight?: number;
-  /** Hidden camera keys keyed by `${datasetId}:${episodeIndex}`. */
+  /** Hidden camera keys keyed by dataset id. */
   hiddenCameras?: Record<string, string[]>;
-  /** Compare state vs action (per-dim split) toggle. */
-  compareStateAction?: boolean;
 }
 
 export function readUiState(): PreviewUiState {

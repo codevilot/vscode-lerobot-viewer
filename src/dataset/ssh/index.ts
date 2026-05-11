@@ -10,6 +10,7 @@ export {
   sshCacheDir,
   sshCacheRoot,
   sshDatasetId,
+  SSH_CACHE_LAST_ACCESS,
 } from "./fetch";
 export { findRemoteDatasets, type ScanProgress } from "./scan";
 export {

@@ -17,9 +17,22 @@ import { log, logError } from "../log";
 import type { DatasetDescriptor, DatasetSnapshot, SshTarget } from "../types";
 import { ensureHuggingFaceDataset } from "./huggingface";
 import { isLeRobotDataset, loadDataset } from "./datasetLoader";
-import { fetchSshDataset, setPinnedTargets, sshCacheDir, sshCacheRoot } from "./ssh";
+import {
+  fetchSshDataset,
+  setPinnedTargets,
+  sshCacheDir,
+  sshCacheRoot,
+  SSH_CACHE_LAST_ACCESS,
+} from "./ssh";
 
 const STATE_KEY = "lerobotViewer.descriptors";
+
+// SSH cache dirs untouched for this long get wiped on activate, even
+// if their dataset is still registered. The descriptor stays in the
+// tree; the next open just re-downloads meta. 1 day matches the
+// user's expectation of "if I haven't used it today, I don't need
+// the cache lying around."
+const STALE_CACHE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const SKIP_DIR_NAMES = new Set([
   "node_modules",
   ".git",
@@ -43,10 +56,10 @@ export class DatasetService implements vscode.Disposable {
   constructor(private readonly context: vscode.ExtensionContext) {
     this.descriptors = this.readPersisted();
     this.refreshSshPins();
-    // Clean up SSH cache directories that no longer correspond to a
-    // registered dataset. Runs in the background — failures here are
-    // never fatal.
+    // Background cache maintenance, both fire-and-forget. Errors are
+    // never fatal — caches just won't be cleaned up this session.
     void this.cleanOrphanSshCaches();
+    void this.cleanStaleSshCaches();
   }
 
   list(): DatasetDescriptor[] {
@@ -331,6 +344,55 @@ export class DatasetService implements vscode.Disposable {
       }
     }
     if (removed > 0) log(`SSH cache: cleaned ${removed} orphan dir(s)`);
+  }
+
+  /**
+   * Delete cached SSH dataset directories that haven't been touched
+   * within STALE_CACHE_THRESHOLD_MS. "Touched" means a successful
+   * fetchSshDataset / ensureSshFile call refreshed the cache root's
+   * `.last-access` sentinel; cache dirs older than that lose their
+   * meta + downloaded files (the descriptor stays in the tree, so
+   * the next open just re-downloads).
+   *
+   * Runs in the background on activate. Legacy caches (older than
+   * this feature) get a sentinel written on first sight rather than
+   * being instantly deleted, so users don't lose data on the upgrade.
+   */
+  private async cleanStaleSshCaches(): Promise<void> {
+    const cacheRoot = sshCacheRoot(this.context);
+    const now = Date.now();
+    let removed = 0;
+    for (const d of this.descriptors) {
+      if (d.source !== "ssh" || !d.ssh) continue;
+      const dir = sshCacheDir(cacheRoot, d.ssh);
+      const sentinel = path.join(dir, SSH_CACHE_LAST_ACCESS);
+      let mtime: number;
+      try {
+        const stat = await fs.stat(sentinel);
+        mtime = stat.mtimeMs;
+      } catch {
+        // No sentinel yet. Treat this as a freshly-discovered cache —
+        // write the sentinel with the current time and skip deletion.
+        try {
+          await fs.writeFile(sentinel, "");
+        } catch {
+          // ignore
+        }
+        continue;
+      }
+      if (now - mtime <= STALE_CACHE_THRESHOLD_MS) continue;
+      try {
+        await fs.rm(dir, { recursive: true, force: true });
+        this.snapshotCache.delete(d.id);
+        removed++;
+        log(
+          `SSH cache: removed stale ${dir} (idle for ${Math.round((now - mtime) / 3_600_000)}h)`,
+        );
+      } catch (err) {
+        logError(`cleaning stale SSH cache ${dir}`, err);
+      }
+    }
+    if (removed > 0) log(`SSH cache: cleaned ${removed} stale dir(s)`);
   }
 
   /**

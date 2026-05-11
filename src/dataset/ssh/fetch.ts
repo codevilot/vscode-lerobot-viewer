@@ -24,6 +24,28 @@ export function sshCacheDir(cacheRoot: string, target: SshTarget): string {
   return nodePath.join(cacheRoot, slug(target.host), slug(target.remotePath));
 }
 
+/** Sentinel filename used to record when this cache dir was last touched. */
+export const SSH_CACHE_LAST_ACCESS = ".last-access";
+
+/**
+ * Touch the cache dir's `.last-access` file so the stale-cache sweep
+ * on next activate knows this dataset is still in active use. Cheap
+ * (a single open+close), fire-and-forget — failures don't matter.
+ */
+export async function touchSshCacheAccess(cacheDir: string): Promise<void> {
+  const sentinel = nodePath.join(cacheDir, SSH_CACHE_LAST_ACCESS);
+  try {
+    const now = new Date();
+    await fs.utimes(sentinel, now, now);
+  } catch {
+    try {
+      await fs.writeFile(sentinel, "");
+    } catch {
+      // best-effort
+    }
+  }
+}
+
 /** Stable DatasetDescriptor.id for an SSH target. Used for dedupe. */
 export function sshDatasetId(target: SshTarget): string {
   return `ssh:${slug(target.host)}:${slug(target.remotePath)}`;
@@ -69,6 +91,7 @@ export async function fetchSshDataset(
       progress,
     );
   });
+  await touchSshCacheAccess(cacheDir);
 
   const name = posix.basename(target.remotePath) || target.host;
   return {
@@ -91,19 +114,25 @@ export async function ensureSshFile(
 ): Promise<void> {
   if (descriptor.source !== "ssh" || !descriptor.ssh || !descriptor.root) return;
   const localPath = nodePath.join(descriptor.root, relativePath);
+  let needsDownload = false;
   try {
     await fs.access(localPath);
-    return;
   } catch {
-    // need to download
+    needsDownload = true;
   }
-  await fs.mkdir(nodePath.dirname(localPath), { recursive: true });
-  await withSftp(descriptor.ssh, async (sftp) => {
-    const remotePath = posix.join(descriptor.ssh!.remotePath, toPosix(relativePath));
-    progress?.(`Downloading ${relativePath}`);
-    log(`SSH fetch ${remotePath} → ${localPath}`);
-    await sftp.fastGet(remotePath, localPath);
-  });
+  if (needsDownload) {
+    await fs.mkdir(nodePath.dirname(localPath), { recursive: true });
+    await withSftp(descriptor.ssh, async (sftp) => {
+      const remotePath = posix.join(descriptor.ssh!.remotePath, toPosix(relativePath));
+      progress?.(`Downloading ${relativePath}`);
+      log(`SSH fetch ${remotePath} → ${localPath}`);
+      await sftp.fastGet(remotePath, localPath);
+    });
+  }
+  // Cache hit OR fresh download both count as "user is actively
+  // using this dataset" — refresh the stale-cache sentinel so the
+  // sweep on next activate keeps this directory.
+  await touchSshCacheAccess(descriptor.root);
 }
 
 async function mirrorDir(

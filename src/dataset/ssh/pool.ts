@@ -33,6 +33,14 @@ const IDLE_TIMEOUT_MS = 5 * 60_000;
 const pool = new Map<string, PoolEntry>();
 const pending = new Map<string, Promise<PoolEntry>>();
 
+// Keys of SSH targets that should stay connected as long as the user
+// has the matching dataset registered in the extension. Entries with
+// pinned keys ignore the idle timeout — they only close when the
+// underlying session dies (and gets re-established on demand) or when
+// the extension deactivates. Ad-hoc sessions used by the add-dataset
+// wizard (browse / scan / probe) are not pinned and still time out.
+const pinnedKeys = new Set<string>();
+
 function poolKey(t: SshTarget): string {
   return `${t.user ?? ""}@${t.host}:${t.port ?? 22}|${t.identityFile ?? ""}`;
 }
@@ -133,8 +141,41 @@ export async function withSftp<T>(
       if (entry.refs === 0) {
         void entry.sftp.end().catch(() => {});
       }
-    } else if (entry.refs === 0) {
+    } else if (entry.refs === 0 && !pinnedKeys.has(key)) {
       scheduleIdleClose(key, entry);
+    }
+  }
+}
+
+/**
+ * Replace the set of "pinned" SSH targets — sessions that should stay
+ * connected across idle periods. Call this whenever the set of
+ * registered SSH datasets changes. Pinning is idempotent and lazy: we
+ * never open a connection just because a target is pinned; we only
+ * skip closing one that's already open.
+ */
+export function setPinnedTargets(targets: SshTarget[]): void {
+  const desired = new Set(targets.map(poolKey));
+
+  // Newly unpinned → if currently idle, schedule the idle close that
+  // pinning was suppressing.
+  for (const k of Array.from(pinnedKeys)) {
+    if (desired.has(k)) continue;
+    pinnedKeys.delete(k);
+    const entry = pool.get(k);
+    if (entry && !entry.dead && entry.refs === 0 && !entry.idleTimer) {
+      scheduleIdleClose(k, entry);
+    }
+  }
+
+  // Newly pinned → cancel any pending idle close.
+  for (const k of desired) {
+    if (pinnedKeys.has(k)) continue;
+    pinnedKeys.add(k);
+    const entry = pool.get(k);
+    if (entry?.idleTimer) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = undefined;
     }
   }
 }

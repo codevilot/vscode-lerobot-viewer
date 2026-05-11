@@ -17,7 +17,7 @@ import { log, logError } from "../log";
 import type { DatasetDescriptor, DatasetSnapshot, SshTarget } from "../types";
 import { ensureHuggingFaceDataset } from "./huggingface";
 import { isLeRobotDataset, loadDataset } from "./datasetLoader";
-import { fetchSshDataset, sshCacheRoot } from "./ssh";
+import { fetchSshDataset, setPinnedTargets, sshCacheRoot } from "./ssh";
 
 const STATE_KEY = "lerobotViewer.descriptors";
 const SKIP_DIR_NAMES = new Set([
@@ -42,6 +42,7 @@ export class DatasetService implements vscode.Disposable {
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.descriptors = this.readPersisted();
+    this.refreshSshPins();
   }
 
   list(): DatasetDescriptor[] {
@@ -184,6 +185,7 @@ export class DatasetService implements vscode.Disposable {
     this.snapshotCache.delete(id);
     if (this.descriptors.length !== before) {
       this.persist();
+      this.refreshSshPins();
       this._onDidChange.fire();
     }
   }
@@ -247,8 +249,21 @@ export class DatasetService implements vscode.Disposable {
     }
     this.snapshotCache.delete(descriptor.id);
     this.persist();
+    this.refreshSshPins();
     this._onDidChange.fire();
     return descriptor;
+  }
+
+  /**
+   * Tell the SSH connection pool which targets correspond to currently
+   * registered datasets, so their sessions can stay alive past the
+   * idle timeout. Called whenever the descriptor list mutates.
+   */
+  private refreshSshPins(): void {
+    const targets = this.descriptors
+      .filter((d) => d.source === "ssh" && d.ssh)
+      .map((d) => d.ssh!);
+    setPinnedTargets(targets);
   }
 
   private readPersisted(): DatasetDescriptor[] {

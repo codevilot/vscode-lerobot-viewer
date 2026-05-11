@@ -11,3 +11,4 @@ export {
   sshDatasetId,
 } from "./fetch";
 export { findRemoteDatasets, type ScanProgress } from "./scan";
+export { setPinnedTargets, disposeSshPool } from "./pool";

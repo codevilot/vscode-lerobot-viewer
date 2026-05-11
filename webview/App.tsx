@@ -10,6 +10,7 @@ import { Timeline } from "./components/Timeline";
 import { TransportBar } from "./components/TransportBar";
 import { MetadataPanel } from "./components/MetadataPanel";
 import { SignalGraph } from "./components/SignalGraph";
+import { StateActionCompare } from "./components/StateActionCompare";
 import { TrajectoryPlot } from "./components/TrajectoryPlot";
 import { EventMarkers } from "./components/EventMarkers";
 import { TaskBand } from "./components/TaskBand";
@@ -36,6 +37,9 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
       ? h
       : SIGNAL_HEIGHT_DEFAULT;
   });
+  const [compareMode, setCompareMode] = useState<boolean>(
+    () => readUiState().compareStateAction ?? false,
+  );
 
   // Camera visibility — persisted per dataset id. Same robot setup
   // usually reuses cameras across episodes, so hiding "cam_left" once
@@ -200,6 +204,11 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
               setSignalHeight(v);
               patchUiState({ signalHeight: v });
             }}
+            compareMode={compareMode}
+            setCompareMode={(v) => {
+              setCompareMode(v);
+              patchUiState({ compareStateAction: v });
+            }}
           />
         </main>
 
@@ -224,16 +233,28 @@ function SignalsPanel({
   cursorFrame,
   signalHeight,
   setSignalHeight,
+  compareMode,
+  setCompareMode,
 }: {
   data: EpisodePreviewData;
   totalFrames: number;
   cursorFrame: number;
   signalHeight: number;
   setSignalHeight: (next: number) => void;
+  compareMode: boolean;
+  setCompareMode: (next: boolean) => void;
 }) {
+  const compareAvailable = !!(data.state && data.action);
+  const showCompare = compareMode && compareAvailable;
   return (
     <section className="space-y-3 px-6 py-4">
-      <SignalsToolbar height={signalHeight} setHeight={setSignalHeight} />
+      <SignalsToolbar
+        height={signalHeight}
+        setHeight={setSignalHeight}
+        compareMode={compareMode}
+        setCompareMode={setCompareMode}
+        compareAvailable={compareAvailable}
+      />
       {data.signalsWarning && (
         <div
           className="rounded-xl px-3 py-2 text-[11px]"
@@ -245,30 +266,44 @@ function SignalsPanel({
           {data.signalsWarning}
         </div>
       )}
-      <SignalGraph
-        title="State"
-        series={data.state}
-        names={data.stateNames}
-        keys={featureKeys(data, "observation.state")}
-        totalFrames={totalFrames}
-        cursorFrame={cursorFrame}
-        datasetMin={data.stats["observation.state"]?.min}
-        datasetMax={data.stats["observation.state"]?.max}
-        datasetMean={data.stats["observation.state"]?.mean}
-        chartHeight={signalHeight}
-      />
-      <SignalGraph
-        title="Action"
-        series={data.action}
-        names={data.actionNames}
-        keys={featureKeys(data, "action")}
-        totalFrames={totalFrames}
-        cursorFrame={cursorFrame}
-        datasetMin={data.stats["action"]?.min}
-        datasetMax={data.stats["action"]?.max}
-        datasetMean={data.stats["action"]?.mean}
-        chartHeight={signalHeight}
-      />
+      {showCompare ? (
+        <StateActionCompare
+          state={data.state!}
+          action={data.action!}
+          stateNames={data.stateNames}
+          actionNames={data.actionNames}
+          totalFrames={totalFrames}
+          cursorFrame={cursorFrame}
+          chartHeight={signalHeight}
+        />
+      ) : (
+        <>
+          <SignalGraph
+            title="State"
+            series={data.state}
+            names={data.stateNames}
+            keys={featureKeys(data, "observation.state")}
+            totalFrames={totalFrames}
+            cursorFrame={cursorFrame}
+            datasetMin={data.stats["observation.state"]?.min}
+            datasetMax={data.stats["observation.state"]?.max}
+            datasetMean={data.stats["observation.state"]?.mean}
+            chartHeight={signalHeight}
+          />
+          <SignalGraph
+            title="Action"
+            series={data.action}
+            names={data.actionNames}
+            keys={featureKeys(data, "action")}
+            totalFrames={totalFrames}
+            cursorFrame={cursorFrame}
+            datasetMin={data.stats["action"]?.min}
+            datasetMax={data.stats["action"]?.max}
+            datasetMean={data.stats["action"]?.mean}
+            chartHeight={signalHeight}
+          />
+        </>
+      )}
       {data.velocity && (
         <SignalGraph
           title="Velocity"
@@ -379,12 +414,29 @@ function EmptyVideoState({ message }: { message: string }) {
 function SignalsToolbar({
   height,
   setHeight,
+  compareMode,
+  setCompareMode,
+  compareAvailable,
 }: {
   height: number;
   setHeight: (h: number) => void;
+  compareMode: boolean;
+  setCompareMode: (v: boolean) => void;
+  compareAvailable: boolean;
 }) {
   return (
-    <div className="flex items-center justify-end gap-2 text-[11px] text-[color-mix(in_srgb,var(--vscode-foreground)_60%,transparent)]">
+    <div className="flex flex-wrap items-center justify-end gap-3 text-[11px] text-[color-mix(in_srgb,var(--vscode-foreground)_60%,transparent)]">
+      {compareAvailable && (
+        <button
+          type="button"
+          onClick={() => setCompareMode(!compareMode)}
+          aria-pressed={compareMode}
+          className={compareMode ? "lr-pill lr-pill-active" : "lr-pill"}
+          title="Per-dim state vs action overlay"
+        >
+          Compare state vs action
+        </button>
+      )}
       <label className="flex items-center gap-2">
         <span>Chart height</span>
         <input

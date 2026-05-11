@@ -14,6 +14,11 @@ const ASIDE_MIN = 360;
 const ASIDE_MAX = 1100;
 const ASIDE_DEFAULT = 620;
 
+// Below this preview-panel width the side-by-side layout gets cramped
+// (cameras squished, only a couple state/action rows visible), so we
+// fall back to a top/bottom 50/50 stack: videos up top, signals below.
+const STACK_THRESHOLD_PX = 720;
+
 export function App({ initial }: { initial: EpisodePreviewData }) {
   const bridge = useMemo(() => getBridge(), []);
   const [data, setData] = useState<EpisodePreviewData>(initial);
@@ -23,6 +28,17 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
     const w = readUiState().asideWidth;
     return typeof w === "number" && w >= ASIDE_MIN && w <= ASIDE_MAX ? w : ASIDE_DEFAULT;
   });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState<boolean>(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver((entries) => {
+      for (const e of entries) setStacked(e.contentRect.width < STACK_THRESHOLD_PX);
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
 
   // Camera visibility — persisted per dataset id. Same robot setup
   // usually reuses cameras across episodes, so hiding "cam_left" once
@@ -99,9 +115,16 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
         : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3";
 
   return (
-    <div className="flex h-full min-h-0">
-      {/* LEFT: cameras + playback controls */}
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <div
+      ref={containerRef}
+      className={`flex h-full min-h-0 ${stacked ? "flex-col" : "flex-row"}`}
+    >
+      {/* TOP (stacked) / LEFT (split): cameras + playback controls */}
+      <main
+        className={`flex min-h-0 min-w-0 flex-col overflow-hidden ${
+          stacked ? "basis-0 flex-1" : "flex-1"
+        }`}
+      >
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
           {hiddenCameraKeys.length > 0 && (
             <HiddenCameraBar
@@ -178,15 +201,27 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
         </div>
       </main>
 
-      <AsideResizer width={asideWidth} setWidth={setAsideWidth} />
+      {stacked ? (
+        <div
+          className="h-px shrink-0"
+          style={{ background: "var(--lr-divider)" }}
+          aria-hidden
+        />
+      ) : (
+        <AsideResizer width={asideWidth} setWidth={setAsideWidth} />
+      )}
 
-      {/* RIGHT: compact episode meta + state/action grid */}
+      {/* BOTTOM (stacked) / RIGHT (split): compact episode meta + state/action grid */}
       <aside
-        className="flex min-h-0 shrink-0 flex-col"
-        style={{
-          width: `${asideWidth}px`,
-          background: "color-mix(in srgb, var(--vscode-foreground) 2%, transparent)",
-        }}
+        className={`flex min-h-0 shrink-0 flex-col ${stacked ? "basis-0 flex-1" : ""}`}
+        style={
+          stacked
+            ? { background: "color-mix(in srgb, var(--vscode-foreground) 2%, transparent)" }
+            : {
+                width: `${asideWidth}px`,
+                background: "color-mix(in srgb, var(--vscode-foreground) 2%, transparent)",
+              }
+        }
       >
         <EpisodeMetaHeader data={data} />
         <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-4 pb-6">

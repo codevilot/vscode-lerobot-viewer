@@ -13,6 +13,8 @@ interface Props {
   datasetMin?: number[];
   datasetMax?: number[];
   datasetMean?: number[];
+  /** Chart drawing height in px. Defaults to 80. */
+  chartHeight?: number;
 }
 
 const PALETTE = [
@@ -42,6 +44,7 @@ export function SignalGraph({
   datasetMin,
   datasetMax,
   datasetMean,
+  chartHeight = 80,
 }: Props) {
   const placeholder = !series || series.length === 0;
   const dims = series?.[0]?.length ?? 0;
@@ -80,6 +83,7 @@ export function SignalGraph({
             hidden={hidden}
             totalFrames={totalFrames}
             cursorFrame={cursorFrame}
+            chartHeight={chartHeight}
           />
         )}
       </div>
@@ -257,16 +261,18 @@ function Sparklines({
   hidden,
   totalFrames,
   cursorFrame,
+  chartHeight,
 }: {
   series: number[][];
   hidden: Set<number>;
   totalFrames: number;
   cursorFrame: number;
+  chartHeight: number;
 }) {
   const dims = series[0]?.length ?? 0;
   const length = series.length;
   const width = 600;
-  const height = 80;
+  const height = chartHeight;
   const [hover, setHover] = useState<{ x: number; frame: number; values: number[] } | null>(null);
 
   const paths = useMemo(() => {
@@ -315,7 +321,8 @@ function Sparklines({
     <div className="relative">
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="h-24 w-full"
+        className="w-full"
+        style={{ height: `${height}px` }}
         preserveAspectRatio="none"
         role="img"
         aria-label="Signal graph"

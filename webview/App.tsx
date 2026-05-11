@@ -17,6 +17,9 @@ import { TaskBand } from "./components/TaskBand";
 const ASIDE_MIN = 240;
 const ASIDE_MAX = 720;
 const ASIDE_DEFAULT = 320;
+const SIGNAL_HEIGHT_MIN = 80;
+const SIGNAL_HEIGHT_MAX = 400;
+const SIGNAL_HEIGHT_DEFAULT = 160;
 
 export function App({ initial }: { initial: EpisodePreviewData }) {
   const bridge = useMemo(() => getBridge(), []);
@@ -26,6 +29,12 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
   const [asideWidth, setAsideWidth] = useState<number>(() => {
     const w = readUiState().asideWidth;
     return typeof w === "number" && w >= ASIDE_MIN && w <= ASIDE_MAX ? w : ASIDE_DEFAULT;
+  });
+  const [signalHeight, setSignalHeight] = useState<number>(() => {
+    const h = readUiState().signalHeight;
+    return typeof h === "number" && h >= SIGNAL_HEIGHT_MIN && h <= SIGNAL_HEIGHT_MAX
+      ? h
+      : SIGNAL_HEIGHT_DEFAULT;
   });
 
   // Camera visibility — persisted per dataset id. Same robot setup
@@ -182,7 +191,16 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
             )}
           </div>
 
-          <SignalsPanel data={data} totalFrames={totalFrames} cursorFrame={playback.frame} />
+          <SignalsPanel
+            data={data}
+            totalFrames={totalFrames}
+            cursorFrame={playback.frame}
+            signalHeight={signalHeight}
+            setSignalHeight={(v) => {
+              setSignalHeight(v);
+              patchUiState({ signalHeight: v });
+            }}
+          />
         </main>
 
         <AsideResizer width={asideWidth} setWidth={setAsideWidth} />
@@ -204,13 +222,18 @@ function SignalsPanel({
   data,
   totalFrames,
   cursorFrame,
+  signalHeight,
+  setSignalHeight,
 }: {
   data: EpisodePreviewData;
   totalFrames: number;
   cursorFrame: number;
+  signalHeight: number;
+  setSignalHeight: (next: number) => void;
 }) {
   return (
     <section className="space-y-3 px-6 py-4">
+      <SignalsToolbar height={signalHeight} setHeight={setSignalHeight} />
       {data.signalsWarning && (
         <div
           className="rounded-xl px-3 py-2 text-[11px]"
@@ -232,6 +255,7 @@ function SignalsPanel({
         datasetMin={data.stats["observation.state"]?.min}
         datasetMax={data.stats["observation.state"]?.max}
         datasetMean={data.stats["observation.state"]?.mean}
+        chartHeight={signalHeight}
       />
       <SignalGraph
         title="Action"
@@ -243,6 +267,7 @@ function SignalsPanel({
         datasetMin={data.stats["action"]?.min}
         datasetMax={data.stats["action"]?.max}
         datasetMean={data.stats["action"]?.mean}
+        chartHeight={signalHeight}
       />
       {data.velocity && (
         <SignalGraph
@@ -255,6 +280,7 @@ function SignalsPanel({
           datasetMin={data.stats["observation.velocity"]?.min}
           datasetMax={data.stats["observation.velocity"]?.max}
           datasetMean={data.stats["observation.velocity"]?.mean}
+          chartHeight={signalHeight}
         />
       )}
       {data.effort && (
@@ -268,6 +294,7 @@ function SignalsPanel({
           datasetMin={data.stats["observation.effort"]?.min}
           datasetMax={data.stats["observation.effort"]?.max}
           datasetMean={data.stats["observation.effort"]?.mean}
+          chartHeight={signalHeight}
         />
       )}
       {data.environmentState && (
@@ -281,6 +308,7 @@ function SignalsPanel({
           datasetMin={data.stats["observation.environment_state"]?.min}
           datasetMax={data.stats["observation.environment_state"]?.max}
           datasetMean={data.stats["observation.environment_state"]?.mean}
+          chartHeight={signalHeight}
         />
       )}
       {data.reward && (
@@ -294,6 +322,7 @@ function SignalsPanel({
           datasetMin={data.stats["next.reward"]?.min}
           datasetMax={data.stats["next.reward"]?.max}
           datasetMean={data.stats["next.reward"]?.mean}
+          chartHeight={signalHeight}
         />
       )}
       <EventMarkers
@@ -343,6 +372,32 @@ function EmptyVideoState({ message }: { message: string }) {
   return (
     <div className="col-span-full flex h-40 items-center justify-center rounded border border-dashed border-vscode-border text-vscode-muted">
       {message}
+    </div>
+  );
+}
+
+function SignalsToolbar({
+  height,
+  setHeight,
+}: {
+  height: number;
+  setHeight: (h: number) => void;
+}) {
+  return (
+    <div className="flex items-center justify-end gap-2 text-[11px] text-[color-mix(in_srgb,var(--vscode-foreground)_60%,transparent)]">
+      <label className="flex items-center gap-2">
+        <span>Chart height</span>
+        <input
+          type="range"
+          min={SIGNAL_HEIGHT_MIN}
+          max={SIGNAL_HEIGHT_MAX}
+          step={8}
+          value={height}
+          onChange={(e) => setHeight(Number(e.currentTarget.value))}
+          className="w-32 align-middle accent-[var(--lr-accent)]"
+        />
+        <span className="w-10 text-right tabular-nums">{height}px</span>
+      </label>
     </div>
   );
 }

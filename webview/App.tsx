@@ -147,6 +147,13 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
             className="sticky top-0 z-10"
             style={{ background: "var(--vscode-editor-background)" }}
           >
+            <FrameReadout
+              frame={playback.frame}
+              totalFrames={totalFrames}
+              fps={fps}
+              taskIndices={data.taskIndices}
+              tasks={data.tasks}
+            />
             <TransportBar
               isPlaying={playback.isPlaying}
               loop={playback.loop}
@@ -338,6 +345,75 @@ function EmptyVideoState({ message }: { message: string }) {
       {message}
     </div>
   );
+}
+
+function FrameReadout({
+  frame,
+  totalFrames,
+  fps,
+  taskIndices,
+  tasks,
+}: {
+  frame: number;
+  totalFrames: number;
+  fps: number;
+  taskIndices?: number[];
+  tasks: EpisodePreviewData["tasks"];
+}) {
+  const max = Math.max(0, totalFrames - 1);
+  const f = Math.round(frame);
+  const seconds = f / Math.max(1, fps);
+  const total = max / Math.max(1, fps);
+  const taskIdx =
+    taskIndices && f < taskIndices.length ? taskIndices[f] : undefined;
+  const taskLabel =
+    taskIdx !== undefined
+      ? tasks.find((t) => t.taskIndex === taskIdx)?.task ?? `task ${taskIdx}`
+      : undefined;
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 px-6 pt-3 pb-1 lr-num">
+      <Stat label="Frame">
+        <span className="text-[22px] font-semibold tabular-nums">{f}</span>
+        <span className="ml-1 text-[12px] text-[color-mix(in_srgb,var(--vscode-foreground)_50%,transparent)]">
+          / {max}
+        </span>
+      </Stat>
+      <Stat label="Time">
+        <span className="text-[22px] font-semibold tabular-nums">{formatTime(seconds)}</span>
+        <span className="ml-1 text-[12px] text-[color-mix(in_srgb,var(--vscode-foreground)_50%,transparent)]">
+          / {formatTime(total)}
+        </span>
+      </Stat>
+      {taskLabel && (
+        <Stat label="Task">
+          <span
+            className="max-w-[40ch] truncate text-[15px] font-medium"
+            title={taskLabel}
+          >
+            {taskLabel}
+          </span>
+        </Stat>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="text-[10px] uppercase tracking-wide text-[color-mix(in_srgb,var(--vscode-foreground)_45%,transparent)]">
+        {label}
+      </span>
+      <span className="flex items-baseline">{children}</span>
+    </div>
+  );
+}
+
+function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds)) return "0:00.0";
+  const m = Math.floor(seconds / 60);
+  const s = seconds - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 }
 
 function HiddenCameraBar({

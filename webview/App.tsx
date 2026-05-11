@@ -52,7 +52,7 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
       <div className="lr-divider mx-6" />
 
       <div className="flex min-h-0 flex-1">
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
           <section className={`grid gap-3 px-6 pt-4 ${gridCols}`}>
             {cameras.length === 0 && <EmptyVideoState message="No camera streams in this dataset." />}
             {visibleCameras.map((cam) => (
@@ -72,32 +72,40 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
             ))}
           </section>
 
-          <TransportBar
-            isPlaying={playback.isPlaying}
-            loop={playback.loop}
-            speed={playback.speed}
-            frame={playback.frame}
-            totalFrames={totalFrames}
-            fps={fps}
-            onPlayPause={() => playback.setIsPlaying((p) => !p)}
-            onSeek={playback.seek}
-            onSpeed={playback.setSpeed}
-            onLoopToggle={() => playback.setLoop((p) => !p)}
-          />
-
-          <Timeline
-            frame={playback.frame}
-            totalFrames={totalFrames}
-            fps={fps}
-            onChange={playback.seek}
-          />
-          {data.taskIndices && (
-            <TaskBand
-              taskIndices={data.taskIndices}
+          {/* Transport/Timeline/TaskBand stay visible while the viewer scrolls
+              (e.g. terminal opens, viewport shrinks) so playback controls are
+              always reachable. */}
+          <div
+            className="sticky top-0 z-10"
+            style={{ background: "var(--vscode-editor-background)" }}
+          >
+            <TransportBar
+              isPlaying={playback.isPlaying}
+              loop={playback.loop}
+              speed={playback.speed}
+              frame={playback.frame}
               totalFrames={totalFrames}
-              taskLabels={Object.fromEntries(data.tasks.map((t) => [t.taskIndex, t.task]))}
+              fps={fps}
+              onPlayPause={() => playback.setIsPlaying((p) => !p)}
+              onSeek={playback.seek}
+              onSpeed={playback.setSpeed}
+              onLoopToggle={() => playback.setLoop((p) => !p)}
             />
-          )}
+
+            <Timeline
+              frame={playback.frame}
+              totalFrames={totalFrames}
+              fps={fps}
+              onChange={playback.seek}
+            />
+            {data.taskIndices && (
+              <TaskBand
+                taskIndices={data.taskIndices}
+                totalFrames={totalFrames}
+                taskLabels={Object.fromEntries(data.tasks.map((t) => [t.taskIndex, t.task]))}
+              />
+            )}
+          </div>
 
           <SignalsPanel data={data} totalFrames={totalFrames} cursorFrame={playback.frame} />
         </main>
@@ -126,7 +134,7 @@ function SignalsPanel({
   cursorFrame: number;
 }) {
   return (
-    <section className="flex-1 space-y-3 overflow-y-auto px-6 py-4 scrollbar-thin">
+    <section className="space-y-3 px-6 py-4">
       {data.signalsWarning && (
         <div
           className="rounded-xl px-3 py-2 text-[11px]"

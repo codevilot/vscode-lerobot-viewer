@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3
+
+Add-dataset flow overhaul, driven by user friction with the SSH wizard ("계속 암호를 묻는게 소켓통신이 지속적으로 끊어지는거같은데", "내부에 있는것도 그 안에 르로봇데이터셋이 있나보고 추가하게", "만일 없는데가있으면그냥없는거지 에러가나올필요는없어").
+
+- SSH: SFTP sessions are now pooled per (user@host:port, identityFile). The browse → probe → fetch → on-demand file download chain shares a single live session instead of opening a fresh one each step, so adding an SSH dataset prompts for the password at most once. Idle sessions stay cached for 5 minutes and survive server-side inactivity via keepalive; lifecycle listeners evict dead sessions transparently.
+- SSH: new "Scan for LeRobot datasets here…" action in the remote folder picker. Bounded BFS (depth ≤ 4, concurrency 12, ≤ 100 results, ≤ 2000 dirs) with cancellable progress, ignores noise dirs (node_modules, .git, __pycache__, venv, …), and recurses past dataset boundaries to catch nested datasets while pruning the dataset's own data/videos/images/meta chunks.
+- Add-dataset UX: both the local "Open LeRobot dataset" picker and the SSH wizard now auto-scan whatever folder you point at and register every LeRobot dataset they find — the picked folder included, plus any nested ones. The "Folder is not a LeRobot dataset (missing meta/info.json)" hard error is gone: an empty scan is silent.
+- Dedupe: registered datasets are now deduplicated by root path, not by source-prefixed id. A folder discovered by workspace auto-scan won't be re-added as a manual entry, and re-running the picker on an already-registered tree is a true no-op. A brief info toast confirms the count whenever something new is added.
+
 ## 0.1.2
 
 Episode page overhaul driven by user feedback ("action/states viewer가 더 잘 보였으면", "action과 states 비교가 편했으면", "정확한 숫자값이 눈에 잘 들어왔으면").

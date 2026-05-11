@@ -13,6 +13,8 @@ interface Props {
   datasetMin?: number[];
   datasetMax?: number[];
   datasetMean?: number[];
+  /** Chart drawing height in px. Defaults to 80. */
+  chartHeight?: number;
 }
 
 const PALETTE = [
@@ -42,6 +44,7 @@ export function SignalGraph({
   datasetMin,
   datasetMax,
   datasetMean,
+  chartHeight = 80,
 }: Props) {
   const placeholder = !series || series.length === 0;
   const dims = series?.[0]?.length ?? 0;
@@ -80,6 +83,7 @@ export function SignalGraph({
             hidden={hidden}
             totalFrames={totalFrames}
             cursorFrame={cursorFrame}
+            chartHeight={chartHeight}
           />
         )}
       </div>
@@ -122,20 +126,21 @@ function DimLegend({
   datasetMean?: number[];
 }) {
   return (
-    <ul className="mt-3 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-2 xl:grid-cols-3">
+    <ul className="mt-3 grid grid-cols-1 gap-1.5 text-[12px] md:grid-cols-2 2xl:grid-cols-3">
       {Array.from({ length: dims }, (_, i) => {
         const isHidden = hidden.has(i);
         const color = PALETTE[i % PALETTE.length];
         const label = names?.[i] ?? `[${i}]`;
         const cursor = cursorValues?.[i];
         const stat = stats[i];
+        const mean = datasetMean?.[i] !== undefined ? datasetMean[i] : stat?.mean;
         return (
           <li key={i}>
             <button
               type="button"
               onClick={() => onToggle(i)}
               aria-pressed={!isHidden}
-              className={`group flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left lr-num transition-colors ${
+              className={`group flex w-full items-center gap-3 rounded-md px-2 py-2 text-left lr-num transition-colors ${
                 isHidden
                   ? "opacity-40"
                   : "hover:bg-[color-mix(in_srgb,var(--vscode-foreground)_8%,transparent)]"
@@ -144,34 +149,38 @@ function DimLegend({
             >
               <span
                 aria-hidden
-                className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ background: isHidden ? "transparent" : color, border: `1.5px solid ${color}` }}
+                className="inline-block h-3 w-3 shrink-0 rounded-full"
+                style={{
+                  background: isHidden ? "transparent" : color,
+                  border: `2px solid ${color}`,
+                }}
               />
-              <span
-                className="min-w-0 flex-1 truncate font-mono text-[11px]"
-                style={{ color: isHidden ? undefined : color }}
-              >
-                {label}
-              </span>
-              <span className="w-14 shrink-0 text-right text-[12px] font-semibold tabular-nums">
-                {cursor !== undefined ? formatValue(cursor) : "—"}
-              </span>
-              <DimRangeBar
-                value={cursor}
-                dsMin={datasetMin?.[i]}
-                dsMax={datasetMax?.[i]}
-                dsMean={datasetMean?.[i]}
-                fallbackStat={stat}
-                color={color}
-              />
-              {stat && (
-                <span className="hidden shrink-0 text-[10px] text-[color-mix(in_srgb,var(--vscode-foreground)_50%,transparent)] xl:inline">
-                  μ{" "}
-                  {formatValue(
-                    datasetMean?.[i] !== undefined ? datasetMean[i] : stat.mean,
-                  )}
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span
+                  className="truncate font-mono text-[12px]"
+                  style={{ color: isHidden ? undefined : color }}
+                >
+                  {label}
                 </span>
-              )}
+                {mean !== undefined && Number.isFinite(mean) && (
+                  <span className="text-[10px] text-[color-mix(in_srgb,var(--vscode-foreground)_45%,transparent)]">
+                    μ {formatValue(mean)}
+                  </span>
+                )}
+              </span>
+              <span className="flex shrink-0 flex-col items-end">
+                <span className="text-[18px] font-semibold leading-none tabular-nums">
+                  {cursor !== undefined ? formatValue(cursor) : "—"}
+                </span>
+                <DimRangeBar
+                  value={cursor}
+                  dsMin={datasetMin?.[i]}
+                  dsMax={datasetMax?.[i]}
+                  dsMean={datasetMean?.[i]}
+                  fallbackStat={stat}
+                  color={color}
+                />
+              </span>
             </button>
           </li>
         );
@@ -203,7 +212,7 @@ function DimRangeBar({
   const max = dsMax ?? fallbackStat?.max;
   const mean = dsMean ?? fallbackStat?.mean;
   if (min === undefined || max === undefined || !Number.isFinite(min) || !Number.isFinite(max)) {
-    return <span className="hidden h-1.5 w-16 lg:inline-block" />;
+    return <span className="h-1.5 w-20" />;
   }
   const range = max - min || 1;
   const pct = (v?: number) =>
@@ -212,7 +221,7 @@ function DimRangeBar({
   const meanPct = pct(mean);
   return (
     <span
-      className="relative hidden h-1.5 w-16 shrink-0 rounded-full lg:inline-block"
+      className="relative mt-1 inline-block h-1.5 w-20 shrink-0 rounded-full"
       style={{ background: "color-mix(in srgb, currentColor 12%, transparent)" }}
       title={`min ${formatValue(min)} · max ${formatValue(max)}${mean !== undefined ? ` · μ ${formatValue(mean)}` : ""}`}
     >
@@ -227,7 +236,7 @@ function DimRangeBar({
         <span
           aria-hidden
           className="absolute top-1/2 block h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full"
-          style={{ background: color, boxShadow: "0 0 0 2px var(--vscode-editor-background)" }}
+          style={{ left: `${valuePct}%`, background: color, boxShadow: "0 0 0 2px var(--vscode-editor-background)" }}
         />
       )}
     </span>
@@ -252,16 +261,18 @@ function Sparklines({
   hidden,
   totalFrames,
   cursorFrame,
+  chartHeight,
 }: {
   series: number[][];
   hidden: Set<number>;
   totalFrames: number;
   cursorFrame: number;
+  chartHeight: number;
 }) {
   const dims = series[0]?.length ?? 0;
   const length = series.length;
   const width = 600;
-  const height = 80;
+  const height = chartHeight;
   const [hover, setHover] = useState<{ x: number; frame: number; values: number[] } | null>(null);
 
   const paths = useMemo(() => {
@@ -310,7 +321,8 @@ function Sparklines({
     <div className="relative">
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="h-24 w-full"
+        className="w-full"
+        style={{ height: `${height}px` }}
         preserveAspectRatio="none"
         role="img"
         aria-label="Signal graph"

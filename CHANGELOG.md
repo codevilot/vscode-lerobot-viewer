@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.4
+
+Episode page redesign + a pass over SSH dataset reliability.
+
+### Episode page
+- Two-pane layout: cameras + playback dock on the left, episode meta + a per-dim state/action grid on the right. The right pane is draggable (360–1100 px) and falls back to a top/bottom 50/50 stack when the panel is narrower than 720 px.
+- New SignalGrid: one row per dim, paired across two columns (state in blue, action in orange). Behind each line a diff band paints |state − action| / σ — olive at ≥ 1σ, red at ≥ 3σ — so tracking error is visible at a glance. Click any chart to seek.
+- Removed components subsumed by the new layout: MetadataPanel sidebar, SignalGraph cards, StateActionCompare overlay, TrajectoryPlot 2D, EventMarkers bar, LengthHistogram, EpisodeStrip, the big Frames/Duration/FPS header, and the Compare toggle + chart-height slider. Webview bundle ~30 KB smaller.
+
+### Faster first paint (especially over SSH)
+- Two-stage init: the webview now receives metadata + cameras as soon as videos resolve, then a follow-up `init-signals` message fills the state/action grid once parquet decode finishes. SignalGrid shows a skeleton ("Decoding signals…") in between, so a multi-second SSH shard download no longer leaves a blank panel.
+- v3.0 parquet shards now decode only the row range belonging to the current episode (`hyparquet rowStart/rowEnd`) instead of the entire multi-episode shard. Roughly 10× faster decode on typical 10-episodes-per-shard layouts.
+- Camera URIs resolve in parallel — a multi-camera SSH dataset no longer pays for sequential downloads.
+
+### SSH connection robustness
+- Sessions for registered SSH datasets stay alive for the lifetime of the VS Code window: pinned in the pool (no idle close), warmed up silently on activate, and auto-reconnected with exponential backoff (1.5 s → 5 s → 15 s → 60 s) when a network drop kills the underlying socket.
+- The first time you type a password / passphrase, it's cached in memory for the session. Silent reconnects and warm-ups reuse it, so a transient drop mid-playback no longer pops a password box. The cache is never persisted to disk and is wiped on deactivate.
+- Tree view shows the live connection state: green filled circle = connected, spinner = connecting, grey outline = disconnected. Tooltip carries the same info plus the host:path.
+
+### Cache hygiene
+- Removing an SSH dataset now wipes its globalStorage cache (the downloaded meta + per-episode files) along with the descriptor.
+- Orphan cache directories — left over from datasets that aren't registered anymore — get cleaned up automatically at activate.
+- A `.last-access` sentinel is touched on every cache hit / fresh download; cache dirs not accessed for 24 hours get reclaimed on the next activate (descriptor stays, meta re-downloads on next open).
+- New "LeRobot: Clean SSH cache" command for explicit "delete everything" after a confirmation.
+
 ## 0.1.3
 
 Add-dataset flow overhaul, driven by user friction with the SSH wizard ("계속 암호를 묻는게 소켓통신이 지속적으로 끊어지는거같은데", "내부에 있는것도 그 안에 르로봇데이터셋이 있나보고 추가하게", "만일 없는데가있으면그냥없는거지 에러가나올필요는없어").

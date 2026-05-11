@@ -2,7 +2,7 @@
   "name": "lerobot-viewer",
   "displayName": "LeRobot Viewer",
   "description": "Browse, preview, and debug Hugging Face LeRobot datasets directly inside VS Code.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "codevilot",
   "license": "Apache-2.0",
   "engines": {

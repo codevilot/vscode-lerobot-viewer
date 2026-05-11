@@ -28,6 +28,48 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
     return typeof w === "number" && w >= ASIDE_MIN && w <= ASIDE_MAX ? w : ASIDE_DEFAULT;
   });
 
+  // Camera visibility — persisted per dataset id. Same robot setup
+  // usually reuses cameras across episodes, so hiding "cam_left" once
+  // hides it for every episode of that dataset.
+  const datasetCameraKey = data.dataset.id;
+  const [hiddenCameras, setHiddenCameras] = useState<Set<string>>(() => {
+    const stored = readUiState().hiddenCameras?.[datasetCameraKey] ?? [];
+    return new Set(stored);
+  });
+  // Reset when navigating between different datasets within one panel.
+  useEffect(() => {
+    const stored = readUiState().hiddenCameras?.[datasetCameraKey] ?? [];
+    setHiddenCameras(new Set(stored));
+  }, [datasetCameraKey]);
+
+  const persistHidden = (next: Set<string>) => {
+    const all = readUiState().hiddenCameras ?? {};
+    patchUiState({
+      hiddenCameras: { ...all, [datasetCameraKey]: [...next] },
+    });
+  };
+  const hideCamera = (key: string) => {
+    setHiddenCameras((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      persistHidden(next);
+      return next;
+    });
+    if (focusedCamera === key) setFocusedCamera(undefined);
+  };
+  const showCamera = (key: string) => {
+    setHiddenCameras((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      persistHidden(next);
+      return next;
+    });
+  };
+  const showAllCameras = () => {
+    setHiddenCameras(new Set());
+    persistHidden(new Set());
+  };
+
   const fps = data.info.fps || 30;
   const totalFrames = data.episode.length ?? 0;
 
@@ -46,12 +88,18 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
   }, [bridge, playback.frame]);
 
   const cameras = data.cameras;
-  const visibleCameras = focusedCamera ? cameras.filter((c) => c.key === focusedCamera) : cameras;
+  const shownCameras = cameras.filter((c) => !hiddenCameras.has(c.key));
+  const visibleCameras = focusedCamera
+    ? shownCameras.filter((c) => c.key === focusedCamera)
+    : shownCameras;
+  const hiddenCameraKeys = cameras
+    .filter((c) => hiddenCameras.has(c.key))
+    .map((c) => c.key);
   const gridCols = focusedCamera
     ? "grid-cols-1"
-    : cameras.length === 1
+    : shownCameras.length <= 1
       ? "grid-cols-1"
-      : cameras.length === 2
+      : shownCameras.length === 2
         ? "grid-cols-1 md:grid-cols-2"
         : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3";
 
@@ -62,8 +110,18 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
 
       <div className="flex min-h-0 flex-1">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
+          {hiddenCameraKeys.length > 0 && (
+            <HiddenCameraBar
+              hiddenKeys={hiddenCameraKeys}
+              onRestore={showCamera}
+              onRestoreAll={showAllCameras}
+            />
+          )}
           <section className={`grid gap-3 px-6 pt-4 ${gridCols}`}>
             {cameras.length === 0 && <EmptyVideoState message="No camera streams in this dataset." />}
+            {cameras.length > 0 && visibleCameras.length === 0 && (
+              <EmptyVideoState message="All cameras are hidden — click a chip above to restore." />
+            )}
             {visibleCameras.map((cam) => (
               <VideoPreview
                 key={cam.key}
@@ -73,6 +131,7 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
                 onToggleFocus={() =>
                   setFocusedCamera(focusedCamera === cam.key ? undefined : cam.key)
                 }
+                onHide={() => hideCamera(cam.key)}
                 registerVideo={(el) => {
                   if (el) videoRefs.current.set(cam.key, el);
                   else videoRefs.current.delete(cam.key);
@@ -277,6 +336,49 @@ function EmptyVideoState({ message }: { message: string }) {
   return (
     <div className="col-span-full flex h-40 items-center justify-center rounded border border-dashed border-vscode-border text-vscode-muted">
       {message}
+    </div>
+  );
+}
+
+function HiddenCameraBar({
+  hiddenKeys,
+  onRestore,
+  onRestoreAll,
+}: {
+  hiddenKeys: string[];
+  onRestore: (key: string) => void;
+  onRestoreAll: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 px-6 pt-3 text-[11px]">
+      <span className="text-[color-mix(in_srgb,var(--vscode-foreground)_55%,transparent)]">
+        Hidden:
+      </span>
+      {hiddenKeys.map((k) => (
+        <button
+          key={k}
+          type="button"
+          onClick={() => onRestore(k)}
+          className="rounded-full px-2 py-0.5 font-mono text-[11px] transition-colors"
+          style={{
+            background: "color-mix(in srgb, var(--vscode-foreground) 8%, transparent)",
+            border: "1px solid var(--lr-divider)",
+          }}
+          title={`Show ${k}`}
+        >
+          {k} <span aria-hidden>+</span>
+        </button>
+      ))}
+      {hiddenKeys.length > 1 && (
+        <button
+          type="button"
+          onClick={onRestoreAll}
+          className="rounded-full px-2 py-0.5 text-[11px]"
+          style={{ color: "var(--lr-accent)" }}
+        >
+          Show all
+        </button>
+      )}
     </div>
   );
 }

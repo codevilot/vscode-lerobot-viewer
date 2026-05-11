@@ -4,23 +4,15 @@ import { getBridge } from "./lib/vscode";
 import { patchUiState, readUiState } from "./lib/webviewState";
 import { usePlayback } from "./hooks/usePlayback";
 import { usePlaybackShortcuts } from "./hooks/usePlaybackShortcuts";
-import { Header } from "./components/Header";
 import { VideoPreview } from "./components/VideoPreview";
 import { Timeline } from "./components/Timeline";
 import { TransportBar } from "./components/TransportBar";
-import { MetadataPanel } from "./components/MetadataPanel";
-import { SignalGraph } from "./components/SignalGraph";
-import { StateActionCompare } from "./components/StateActionCompare";
-import { TrajectoryPlot } from "./components/TrajectoryPlot";
-import { EventMarkers } from "./components/EventMarkers";
 import { TaskBand } from "./components/TaskBand";
+import { SignalGrid } from "./components/SignalGrid";
 
-const ASIDE_MIN = 240;
-const ASIDE_MAX = 720;
-const ASIDE_DEFAULT = 320;
-const SIGNAL_HEIGHT_MIN = 80;
-const SIGNAL_HEIGHT_MAX = 400;
-const SIGNAL_HEIGHT_DEFAULT = 160;
+const ASIDE_MIN = 360;
+const ASIDE_MAX = 1100;
+const ASIDE_DEFAULT = 620;
 
 export function App({ initial }: { initial: EpisodePreviewData }) {
   const bridge = useMemo(() => getBridge(), []);
@@ -31,15 +23,6 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
     const w = readUiState().asideWidth;
     return typeof w === "number" && w >= ASIDE_MIN && w <= ASIDE_MAX ? w : ASIDE_DEFAULT;
   });
-  const [signalHeight, setSignalHeight] = useState<number>(() => {
-    const h = readUiState().signalHeight;
-    return typeof h === "number" && h >= SIGNAL_HEIGHT_MIN && h <= SIGNAL_HEIGHT_MAX
-      ? h
-      : SIGNAL_HEIGHT_DEFAULT;
-  });
-  const [compareMode, setCompareMode] = useState<boolean>(
-    () => readUiState().compareStateAction ?? false,
-  );
 
   // Camera visibility — persisted per dataset id. Same robot setup
   // usually reuses cameras across episodes, so hiding "cam_left" once
@@ -49,7 +32,6 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
     const stored = readUiState().hiddenCameras?.[datasetCameraKey] ?? [];
     return new Set(stored);
   });
-  // Reset when navigating between different datasets within one panel.
   useEffect(() => {
     const stored = readUiState().hiddenCameras?.[datasetCameraKey] ?? [];
     setHiddenCameras(new Set(stored));
@@ -117,12 +99,10 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
         : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <Header data={data} />
-      <div className="lr-divider mx-6" />
-
-      <div className="flex min-h-0 flex-1">
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
+    <div className="flex h-full min-h-0">
+      {/* LEFT: cameras + playback controls */}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
           {hiddenCameraKeys.length > 0 && (
             <HiddenCameraBar
               hiddenKeys={hiddenCameraKeys}
@@ -130,8 +110,10 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
               onRestoreAll={showAllCameras}
             />
           )}
-          <section className={`grid gap-3 px-6 pt-4 ${gridCols}`}>
-            {cameras.length === 0 && <EmptyVideoState message="No camera streams in this dataset." />}
+          <section className={`grid gap-3 px-5 pt-5 ${gridCols}`}>
+            {cameras.length === 0 && (
+              <EmptyVideoState message={`No video streams for episode #${data.episode.episodeIndex}`} />
+            )}
             {cameras.length > 0 && visibleCameras.length === 0 && (
               <EmptyVideoState message="All cameras are hidden — click a chip above to restore." />
             )}
@@ -152,309 +134,146 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
               />
             ))}
           </section>
+          <div className="h-5" />
+        </div>
 
-          {/* Transport/Timeline/TaskBand stay visible while the viewer scrolls
-              (e.g. terminal opens, viewport shrinks) so playback controls are
-              always reachable. */}
-          <div
-            className="sticky top-0 z-10"
-            style={{ background: "var(--vscode-editor-background)" }}
-          >
-            <FrameReadout
-              frame={playback.frame}
-              totalFrames={totalFrames}
-              fps={fps}
+        {/* Playback dock — fixed at the bottom of the left column so
+            controls stay reachable regardless of camera grid size. */}
+        <div
+          className="shrink-0 border-t border-[var(--lr-divider)]"
+          style={{ background: "var(--vscode-editor-background)" }}
+        >
+          <FrameReadoutRow
+            frame={playback.frame}
+            totalFrames={totalFrames}
+            fps={fps}
+            taskIndices={data.taskIndices}
+            tasks={data.tasks}
+          />
+          <TransportBar
+            isPlaying={playback.isPlaying}
+            loop={playback.loop}
+            speed={playback.speed}
+            frame={playback.frame}
+            totalFrames={totalFrames}
+            fps={fps}
+            onPlayPause={() => playback.setIsPlaying((p) => !p)}
+            onSeek={playback.seek}
+            onSpeed={playback.setSpeed}
+            onLoopToggle={() => playback.setLoop((p) => !p)}
+          />
+          <Timeline
+            frame={playback.frame}
+            totalFrames={totalFrames}
+            fps={fps}
+            onChange={playback.seek}
+          />
+          {data.taskIndices && (
+            <TaskBand
               taskIndices={data.taskIndices}
-              tasks={data.tasks}
-            />
-            <TransportBar
-              isPlaying={playback.isPlaying}
-              loop={playback.loop}
-              speed={playback.speed}
-              frame={playback.frame}
               totalFrames={totalFrames}
-              fps={fps}
-              onPlayPause={() => playback.setIsPlaying((p) => !p)}
-              onSeek={playback.seek}
-              onSpeed={playback.setSpeed}
-              onLoopToggle={() => playback.setLoop((p) => !p)}
+              taskLabels={Object.fromEntries(data.tasks.map((t) => [t.taskIndex, t.task]))}
             />
+          )}
+        </div>
+      </main>
 
-            <Timeline
-              frame={playback.frame}
-              totalFrames={totalFrames}
-              fps={fps}
-              onChange={playback.seek}
-            />
-            {data.taskIndices && (
-              <TaskBand
-                taskIndices={data.taskIndices}
-                totalFrames={totalFrames}
-                taskLabels={Object.fromEntries(data.tasks.map((t) => [t.taskIndex, t.task]))}
-              />
-            )}
-          </div>
+      <AsideResizer width={asideWidth} setWidth={setAsideWidth} />
 
-          <SignalsPanel
-            data={data}
+      {/* RIGHT: compact episode meta + state/action grid */}
+      <aside
+        className="flex min-h-0 shrink-0 flex-col"
+        style={{
+          width: `${asideWidth}px`,
+          background: "color-mix(in srgb, var(--vscode-foreground) 2%, transparent)",
+        }}
+      >
+        <EpisodeMetaHeader data={data} />
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-4 pb-6">
+          <SignalGrid
+            stateSeries={data.state}
+            actionSeries={data.action}
+            stateNames={data.stateNames}
+            actionNames={data.actionNames}
             totalFrames={totalFrames}
             cursorFrame={playback.frame}
-            signalHeight={signalHeight}
-            setSignalHeight={(v) => {
-              setSignalHeight(v);
-              patchUiState({ signalHeight: v });
-            }}
-            compareMode={compareMode}
-            setCompareMode={(v) => {
-              setCompareMode(v);
-              patchUiState({ compareStateAction: v });
-            }}
+            stateStd={data.stats["observation.state"]?.std}
+            actionStd={data.stats["action"]?.std}
+            onSeek={playback.seek}
           />
-        </main>
-
-        <AsideResizer width={asideWidth} setWidth={setAsideWidth} />
-        <aside
-          className="shrink-0 overflow-y-auto scrollbar-thin"
-          style={{
-            width: `${asideWidth}px`,
-            background: "color-mix(in srgb, var(--vscode-foreground) 2%, transparent)",
-          }}
-        >
-          <MetadataPanel data={data} />
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-function SignalsPanel({
-  data,
-  totalFrames,
-  cursorFrame,
-  signalHeight,
-  setSignalHeight,
-  compareMode,
-  setCompareMode,
-}: {
-  data: EpisodePreviewData;
-  totalFrames: number;
-  cursorFrame: number;
-  signalHeight: number;
-  setSignalHeight: (next: number) => void;
-  compareMode: boolean;
-  setCompareMode: (next: boolean) => void;
-}) {
-  const compareAvailable = !!(data.state && data.action);
-  const showCompare = compareMode && compareAvailable;
-  return (
-    <section className="space-y-3 px-6 py-4">
-      <SignalsToolbar
-        height={signalHeight}
-        setHeight={setSignalHeight}
-        compareMode={compareMode}
-        setCompareMode={setCompareMode}
-        compareAvailable={compareAvailable}
-      />
-      {data.signalsWarning && (
-        <div
-          className="rounded-xl px-3 py-2 text-[11px]"
-          style={{
-            background: "color-mix(in srgb, #f5a85a 14%, transparent)",
-            color: "#f5a85a",
-          }}
-        >
-          {data.signalsWarning}
         </div>
-      )}
-      {showCompare ? (
-        <StateActionCompare
-          state={data.state!}
-          action={data.action!}
-          stateNames={data.stateNames}
-          actionNames={data.actionNames}
-          totalFrames={totalFrames}
-          cursorFrame={cursorFrame}
-          chartHeight={signalHeight}
-        />
-      ) : (
-        <>
-          <SignalGraph
-            title="State"
-            series={data.state}
-            names={data.stateNames}
-            keys={featureKeys(data, "observation.state")}
-            totalFrames={totalFrames}
-            cursorFrame={cursorFrame}
-            datasetMin={data.stats["observation.state"]?.min}
-            datasetMax={data.stats["observation.state"]?.max}
-            datasetMean={data.stats["observation.state"]?.mean}
-            chartHeight={signalHeight}
-          />
-          <SignalGraph
-            title="Action"
-            series={data.action}
-            names={data.actionNames}
-            keys={featureKeys(data, "action")}
-            totalFrames={totalFrames}
-            cursorFrame={cursorFrame}
-            datasetMin={data.stats["action"]?.min}
-            datasetMax={data.stats["action"]?.max}
-            datasetMean={data.stats["action"]?.mean}
-            chartHeight={signalHeight}
-          />
-        </>
-      )}
-      {data.velocity && (
-        <SignalGraph
-          title="Velocity"
-          series={data.velocity}
-          names={data.velocityNames}
-          keys={featureKeys(data, "observation.velocity")}
-          totalFrames={totalFrames}
-          cursorFrame={cursorFrame}
-          datasetMin={data.stats["observation.velocity"]?.min}
-          datasetMax={data.stats["observation.velocity"]?.max}
-          datasetMean={data.stats["observation.velocity"]?.mean}
-          chartHeight={signalHeight}
-        />
-      )}
-      {data.effort && (
-        <SignalGraph
-          title="Effort"
-          series={data.effort}
-          names={data.effortNames}
-          keys={featureKeys(data, "observation.effort")}
-          totalFrames={totalFrames}
-          cursorFrame={cursorFrame}
-          datasetMin={data.stats["observation.effort"]?.min}
-          datasetMax={data.stats["observation.effort"]?.max}
-          datasetMean={data.stats["observation.effort"]?.mean}
-          chartHeight={signalHeight}
-        />
-      )}
-      {data.environmentState && (
-        <SignalGraph
-          title="Environment state"
-          series={data.environmentState}
-          names={data.environmentStateNames}
-          keys={featureKeys(data, "observation.environment_state")}
-          totalFrames={totalFrames}
-          cursorFrame={cursorFrame}
-          datasetMin={data.stats["observation.environment_state"]?.min}
-          datasetMax={data.stats["observation.environment_state"]?.max}
-          datasetMean={data.stats["observation.environment_state"]?.mean}
-          chartHeight={signalHeight}
-        />
-      )}
-      {data.reward && (
-        <SignalGraph
-          title="Reward"
-          series={data.reward.map((v) => [v])}
-          names={["reward"]}
-          keys={["next.reward"]}
-          totalFrames={totalFrames}
-          cursorFrame={cursorFrame}
-          datasetMin={data.stats["next.reward"]?.min}
-          datasetMax={data.stats["next.reward"]?.max}
-          datasetMean={data.stats["next.reward"]?.mean}
-          chartHeight={signalHeight}
-        />
-      )}
-      <EventMarkers
-        series={[
-          data.done && { label: "done", values: data.done, color: "#f56b8c" },
-          data.success && { label: "success", values: data.success, color: "#79e08c" },
-          data.truncated && { label: "truncated", values: data.truncated, color: "#f5a85a" },
-        ].filter(Boolean) as { label: string; values: number[]; color: string }[]}
-        totalFrames={totalFrames}
-      />
-      <div className="grid gap-3 sm:grid-cols-2">
-        <TrajectoryPlot
-          title="State"
-          series={data.state}
-          names={data.stateNames}
-          totalFrames={totalFrames}
-          cursorFrame={cursorFrame}
-        />
-        <TrajectoryPlot
-          title="Action"
-          series={data.action}
-          names={data.actionNames}
-          totalFrames={totalFrames}
-          cursorFrame={cursorFrame}
-        />
+      </aside>
+    </div>
+  );
+}
+
+function EpisodeMetaHeader({ data }: { data: EpisodePreviewData }) {
+  const ep = data.episode;
+  const fps = data.info.fps || 30;
+  const frames = ep.length ?? 0;
+  const duration = frames / Math.max(1, fps);
+  const task = ep.tasks[0];
+  const epLabel = `ep_${ep.episodeIndex.toString().padStart(3, "0")}`;
+
+  return (
+    <header className="shrink-0 border-b border-[var(--lr-divider)] px-4 pt-4 pb-3">
+      <div className="mb-3 flex items-baseline justify-between">
+        <h1 className="truncate text-[13px] font-semibold text-[color-mix(in_srgb,var(--vscode-foreground)_75%,transparent)]">
+          {data.dataset.name}
+        </h1>
+        <span className="text-[11px] tabular-nums text-[color-mix(in_srgb,var(--vscode-foreground)_45%,transparent)]">
+          {data.version}
+        </span>
       </div>
-    </section>
-  );
-}
-
-function featureKeys(
-  data: EpisodePreviewData,
-  prefix:
-    | "observation.state"
-    | "observation.velocity"
-    | "observation.effort"
-    | "observation.environment_state"
-    | "action",
-): string[] {
-  if (!data.info.features) return [];
-  return Object.keys(data.info.features).filter((k) =>
-    prefix === "action" ? k === "action" || k.startsWith("action.") : k.startsWith(prefix),
-  );
-}
-
-function EmptyVideoState({ message }: { message: string }) {
-  return (
-    <div className="col-span-full flex h-40 items-center justify-center rounded border border-dashed border-vscode-border text-vscode-muted">
-      {message}
-    </div>
-  );
-}
-
-function SignalsToolbar({
-  height,
-  setHeight,
-  compareMode,
-  setCompareMode,
-  compareAvailable,
-}: {
-  height: number;
-  setHeight: (h: number) => void;
-  compareMode: boolean;
-  setCompareMode: (v: boolean) => void;
-  compareAvailable: boolean;
-}) {
-  return (
-    <div className="flex flex-wrap items-center justify-end gap-3 text-[11px] text-[color-mix(in_srgb,var(--vscode-foreground)_60%,transparent)]">
-      {compareAvailable && (
-        <button
-          type="button"
-          onClick={() => setCompareMode(!compareMode)}
-          aria-pressed={compareMode}
-          className={compareMode ? "lr-pill lr-pill-active" : "lr-pill"}
-          title="Per-dim state vs action overlay"
-        >
-          Compare state vs action
-        </button>
+      <MetaRow label="episode" value={epLabel} mono accent="rust" />
+      <MetaRow label="frames" value={frames.toLocaleString()} />
+      <MetaRow label="duration" value={`${duration.toFixed(2)}s`} />
+      <MetaRow label="fps" value={String(data.info.fps)} />
+      {task && <MetaRow label="task" value={task} truncate />}
+      {data.episodeSplit && <MetaRow label="split" value={data.episodeSplit} accent="green" />}
+      {data.info.robotType && data.info.robotType !== "unknown" && (
+        <MetaRow label="robot" value={data.info.robotType} />
       )}
-      <label className="flex items-center gap-2">
-        <span>Chart height</span>
-        <input
-          type="range"
-          min={SIGNAL_HEIGHT_MIN}
-          max={SIGNAL_HEIGHT_MAX}
-          step={8}
-          value={height}
-          onChange={(e) => setHeight(Number(e.currentTarget.value))}
-          className="w-32 align-middle accent-[var(--lr-accent)]"
-        />
-        <span className="w-10 text-right tabular-nums">{height}px</span>
-      </label>
+    </header>
+  );
+}
+
+function MetaRow({
+  label,
+  value,
+  mono,
+  accent,
+  truncate,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  accent?: "rust" | "green";
+  truncate?: boolean;
+}) {
+  const color =
+    accent === "rust"
+      ? "#d97757"
+      : accent === "green"
+        ? "#79e08c"
+        : "color-mix(in srgb, var(--vscode-foreground) 85%, transparent)";
+  return (
+    <div className="flex items-baseline justify-between py-[3px] text-[12px]">
+      <span className="text-[color-mix(in_srgb,var(--vscode-foreground)_50%,transparent)]">
+        {label}
+      </span>
+      <span
+        className={`tabular-nums ${mono ? "font-mono" : ""} ${truncate ? "ml-3 max-w-[60%] truncate" : ""}`}
+        style={{ color }}
+        title={truncate ? value : undefined}
+      >
+        {value}
+      </span>
     </div>
   );
 }
 
-function FrameReadout({
+function FrameReadoutRow({
   frame,
   totalFrames,
   fps,
@@ -478,25 +297,22 @@ function FrameReadout({
       ? tasks.find((t) => t.taskIndex === taskIdx)?.task ?? `task ${taskIdx}`
       : undefined;
   return (
-    <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 px-6 pt-3 pb-1 lr-num">
+    <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 px-5 pt-3 pb-1 lr-num">
       <Stat label="Frame">
-        <span className="text-[22px] font-semibold tabular-nums">{f}</span>
+        <span className="text-[20px] font-semibold tabular-nums">{f}</span>
         <span className="ml-1 text-[12px] text-[color-mix(in_srgb,var(--vscode-foreground)_50%,transparent)]">
           / {max}
         </span>
       </Stat>
       <Stat label="Time">
-        <span className="text-[22px] font-semibold tabular-nums">{formatTime(seconds)}</span>
+        <span className="text-[20px] font-semibold tabular-nums">{formatTime(seconds)}</span>
         <span className="ml-1 text-[12px] text-[color-mix(in_srgb,var(--vscode-foreground)_50%,transparent)]">
           / {formatTime(total)}
         </span>
       </Stat>
       {taskLabel && (
         <Stat label="Task">
-          <span
-            className="max-w-[40ch] truncate text-[15px] font-medium"
-            title={taskLabel}
-          >
+          <span className="max-w-[40ch] truncate text-[14px] font-medium" title={taskLabel}>
             {taskLabel}
           </span>
         </Stat>
@@ -523,6 +339,14 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 }
 
+function EmptyVideoState({ message }: { message: string }) {
+  return (
+    <div className="col-span-full flex h-40 items-center justify-center rounded border border-dashed border-vscode-border text-vscode-muted">
+      {message}
+    </div>
+  );
+}
+
 function HiddenCameraBar({
   hiddenKeys,
   onRestore,
@@ -533,7 +357,7 @@ function HiddenCameraBar({
   onRestoreAll: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5 px-6 pt-3 text-[11px]">
+    <div className="flex flex-wrap items-center gap-1.5 px-5 pt-3 text-[11px]">
       <span className="text-[color-mix(in_srgb,var(--vscode-foreground)_55%,transparent)]">
         Hidden:
       </span>
@@ -579,7 +403,6 @@ function AsideResizer({
     const onMove = (e: MouseEvent) => {
       const start = startRef.current;
       if (!start) return;
-      // Drag leftwards (smaller clientX) makes the right aside wider.
       const next = Math.max(ASIDE_MIN, Math.min(ASIDE_MAX, start.w + (start.x - e.clientX)));
       setWidth(next);
     };
@@ -602,7 +425,7 @@ function AsideResizer({
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label="Resize metadata panel"
+      aria-label="Resize state/action panel"
       tabIndex={0}
       className="group relative w-1 shrink-0 cursor-col-resize"
       style={{ background: "var(--lr-divider)" }}
@@ -617,7 +440,7 @@ function AsideResizer({
         patchUiState({ asideWidth: ASIDE_DEFAULT });
       }}
       onKeyDown={(e) => {
-        const step = e.shiftKey ? 32 : 8;
+        const step = e.shiftKey ? 48 : 16;
         if (e.key === "ArrowLeft") {
           const next = Math.min(ASIDE_MAX, width + step);
           setWidth(next);
@@ -631,7 +454,6 @@ function AsideResizer({
         }
       }}
     >
-      {/* Wider invisible hit area for easier grabbing. */}
       <span
         aria-hidden
         className="absolute inset-y-0 -left-1.5 -right-1.5 group-hover:bg-[color-mix(in_srgb,var(--lr-accent)_18%,transparent)]"

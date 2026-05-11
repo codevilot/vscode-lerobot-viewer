@@ -107,19 +107,24 @@ export class DatasetService implements vscode.Disposable {
         ),
     );
 
-    const existingIds = new Set(this.descriptors.map((d) => d.id));
+    // Dedupe by root path, not just id, so a folder discovered by
+    // workspace auto-scan (id "workspace:…") doesn't get re-added as a
+    // manual entry with id "local:…" pointing at the same physical
+    // path. Whatever covers a path first wins.
+    const existingRoots = new Set(
+      this.descriptors.map((d) => d.root).filter((r): r is string => !!r),
+    );
     const added: DatasetDescriptor[] = [];
     let skipped = 0;
     for (const p of found) {
-      const id = `local:${p}`;
-      if (existingIds.has(id)) {
+      if (existingRoots.has(p)) {
         skipped++;
         continue;
       }
-      existingIds.add(id);
+      existingRoots.add(p);
       added.push(
         this.upsert({
-          id,
+          id: `local:${p}`,
           name: path.basename(p),
           root: p,
           source: "manual",
@@ -188,24 +193,38 @@ export class DatasetService implements vscode.Disposable {
     const config = vscode.workspace.getConfiguration("lerobotViewer");
     const maxDepth = config.get<number>("workspaceScanDepth") ?? 3;
     const folders = vscode.workspace.workspaceFolders ?? [];
+
+    // Paths already covered by manual / HF / SSH entries; we won't
+    // double-register them under a workspace: id.
+    const claimedRoots = new Set(
+      this.descriptors
+        .filter((d) => d.source !== "workspace")
+        .map((d) => d.root)
+        .filter((r): r is string => !!r),
+    );
+
     const found: DatasetDescriptor[] = [];
     for (const folder of folders) {
       await walk(folder.uri.fsPath, maxDepth, async (dir) => {
         if (await isLeRobotDataset(dir)) {
-          found.push({
-            id: `workspace:${dir}`,
-            name: path.basename(dir),
-            root: dir,
-            source: "workspace",
-          });
+          if (!claimedRoots.has(dir)) {
+            claimedRoots.add(dir);
+            found.push({
+              id: `workspace:${dir}`,
+              name: path.basename(dir),
+              root: dir,
+              source: "workspace",
+            });
+          }
           return "skip-children";
         }
         return "continue";
       });
     }
 
-    // Reconcile: keep manual + HF entries; replace workspace entries with the
-    // freshly-discovered set so removed folders disappear.
+    // Reconcile: keep manual + HF + SSH entries; replace workspace
+    // entries with the freshly-discovered set so removed folders
+    // disappear.
     const nonWorkspace = this.descriptors.filter((d) => d.source !== "workspace");
     this.descriptors = dedupeById([...nonWorkspace, ...found]);
     this.persist();

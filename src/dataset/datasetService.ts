@@ -84,19 +84,49 @@ export class DatasetService implements vscode.Disposable {
   }
 
   async addLocalFolder(uri: vscode.Uri): Promise<DatasetDescriptor | undefined> {
-    if (!(await isLeRobotDataset(uri.fsPath))) {
+    if (await isLeRobotDataset(uri.fsPath)) {
+      return this.upsert({
+        id: `local:${uri.fsPath}`,
+        name: path.basename(uri.fsPath),
+        root: uri.fsPath,
+        source: "manual",
+      });
+    }
+
+    // Folder isn't itself a dataset — fall back to a bounded scan in
+    // case the user pointed at a parent directory containing one or
+    // more datasets.
+    const found = await vscode.window.withProgress<string[]>(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Scanning ${uri.fsPath} for LeRobot datasets`,
+        cancellable: true,
+      },
+      (progress, token) =>
+        findLocalDatasets(uri.fsPath, token, (state) =>
+          progress.report({
+            message: `found ${state.found} · scanned ${state.scanned} · ${shortenLocalProgress(state.currentDir, uri.fsPath)}`,
+          }),
+        ),
+    );
+
+    if (found.length === 0) {
       vscode.window.showErrorMessage(
-        `Folder is not a LeRobot dataset (missing meta/info.json): ${uri.fsPath}`,
+        `No LeRobot dataset (meta/info.json) found in or under ${uri.fsPath}.`,
       );
       return undefined;
     }
-    const descriptor: DatasetDescriptor = {
-      id: `local:${uri.fsPath}`,
-      name: path.basename(uri.fsPath),
-      root: uri.fsPath,
+
+    const picked =
+      found.length === 1 ? found[0] : await pickLocalDataset(uri.fsPath, found);
+    if (!picked) return undefined;
+
+    return this.upsert({
+      id: `local:${picked}`,
+      name: path.basename(picked),
+      root: picked,
       source: "manual",
-    };
-    return this.upsert(descriptor);
+    });
   }
 
   async addSshDataset(target: SshTarget): Promise<DatasetDescriptor | undefined> {
@@ -220,6 +250,116 @@ function dedupeById(items: DatasetDescriptor[]): DatasetDescriptor[] {
     seen.add(d.id);
     return true;
   });
+}
+
+// Bounded local BFS used as a fallback when the user picks a folder
+// that isn't itself a dataset. Mirrors the SSH scan's behavior so the
+// two flows feel the same: depth-limited, skips noise dirs, recurses
+// past dataset boundaries to catch nested datasets, but prunes the
+// dataset's own internal layout (data/videos/images/meta) to avoid
+// burning time on chunk subdirs.
+
+const LOCAL_SCAN_MAX_DEPTH = 4;
+const LOCAL_SCAN_MAX_RESULTS = 100;
+const LOCAL_SCAN_MAX_DIRS = 5000;
+const DATASET_INTERNAL_DIRS = new Set(["data", "videos", "images", "meta"]);
+
+interface LocalScanState {
+  scanned: number;
+  found: number;
+  currentDir: string;
+}
+
+async function findLocalDatasets(
+  rootDir: string,
+  token: vscode.CancellationToken,
+  onProgress: (s: LocalScanState) => void,
+): Promise<string[]> {
+  const found: string[] = [];
+  let level: Array<{ dir: string; insideDataset: boolean }> = [
+    { dir: rootDir, insideDataset: false },
+  ];
+  let depth = 0;
+  let scanned = 0;
+
+  const shouldStop = (): boolean =>
+    token.isCancellationRequested ||
+    found.length >= LOCAL_SCAN_MAX_RESULTS ||
+    scanned >= LOCAL_SCAN_MAX_DIRS;
+
+  while (level.length > 0 && depth <= LOCAL_SCAN_MAX_DEPTH) {
+    if (shouldStop()) break;
+    const nextLevel: typeof level = [];
+
+    for (const item of level) {
+      if (shouldStop()) break;
+      scanned++;
+      const isDs = await isLeRobotDataset(item.dir);
+      if (isDs && found.length < LOCAL_SCAN_MAX_RESULTS) found.push(item.dir);
+      onProgress({ scanned, found: found.length, currentDir: item.dir });
+
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = await fs.readdir(item.dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      const childInsideDataset = isDs || item.insideDataset;
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        if (e.name.startsWith(".")) continue;
+        if (SKIP_DIR_NAMES.has(e.name)) continue;
+        if (childInsideDataset && DATASET_INTERNAL_DIRS.has(e.name)) continue;
+        nextLevel.push({
+          dir: path.join(item.dir, e.name),
+          insideDataset: childInsideDataset,
+        });
+      }
+    }
+
+    level = nextLevel;
+    depth++;
+  }
+
+  return found;
+}
+
+async function pickLocalDataset(
+  rootDir: string,
+  candidates: string[],
+): Promise<string | undefined> {
+  type Item = vscode.QuickPickItem & { path: string };
+  const items: Item[] = candidates
+    .slice()
+    .sort((a, b) => a.localeCompare(b))
+    .map((p) => {
+      const rel = path.relative(rootDir, p);
+      return {
+        label: `$(database) ${path.basename(p) || p}`,
+        description: rel.length === 0 ? "(this folder)" : rel,
+        detail: p,
+        path: p,
+      };
+    });
+  const hitCap = candidates.length >= LOCAL_SCAN_MAX_RESULTS;
+  const title = hitCap
+    ? `${candidates.length}+ datasets under ${rootDir} (result cap reached)`
+    : `${candidates.length} datasets under ${rootDir}`;
+  const pick = await vscode.window.showQuickPick(items, {
+    title,
+    placeHolder: "Select a dataset to add",
+    ignoreFocusOut: true,
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  return pick?.path;
+}
+
+function shortenLocalProgress(full: string, root: string): string {
+  const rel = path.relative(root, full);
+  const display = rel.length === 0 ? "." : rel;
+  return display.length > 60 ? "…" + display.slice(-58) : display;
 }
 
 type WalkDecision = "continue" | "skip-children";

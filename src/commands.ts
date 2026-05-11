@@ -10,7 +10,13 @@ import type { DatasetTreeProvider, EpisodeNode, DatasetNode } from "./providers/
 import type { EpisodePreviewPanelManager } from "./webview/episodePreviewPanel";
 import type { MetadataViewerPanelManager } from "./webview/metadataViewerPanel";
 import { isValidRepoId } from "./dataset/huggingface";
-import { parseSshConfig, pickRemoteFolder, probeRemoteDataset } from "./dataset/ssh";
+import {
+  findRemoteDatasets,
+  parseSshConfig,
+  pickRemoteFolder,
+  probeRemoteDataset,
+} from "./dataset/ssh";
+import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
 import { log } from "./log";
 import type { SshTarget } from "./types";
@@ -257,11 +263,74 @@ async function runSshWizard(): Promise<SshTarget | undefined> {
     },
     () => probeRemoteDataset(fullTarget),
   );
-  if (!probe.ok) {
-    vscode.window.showErrorMessage(`SSH probe failed: ${probe.reason ?? "unknown error"}`);
+  if (probe.ok) return fullTarget;
+
+  // If the only reason probe failed is "no meta/info.json here", the
+  // user may have pointed at a parent folder. Run a bounded scan and
+  // offer any nested datasets we find before giving up.
+  if (probe.reason && /no meta\/info\.json/i.test(probe.reason)) {
+    const picked = await runSshFallbackScan(fullTarget);
+    if (picked) return { ...fullTarget, remotePath: picked };
     return undefined;
   }
-  return fullTarget;
+  vscode.window.showErrorMessage(`SSH probe failed: ${probe.reason ?? "unknown error"}`);
+  return undefined;
+}
+
+async function runSshFallbackScan(target: SshTarget): Promise<string | undefined> {
+  const root = target.remotePath;
+  const found = await vscode.window.withProgress<string[]>(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Scanning ${root} for LeRobot datasets`,
+      cancellable: true,
+    },
+    (progress, token) =>
+      findRemoteDatasets(target, root, token, (p) =>
+        progress.report({
+          message: `found ${p.found} · scanned ${p.scanned} · ${shortenSshProgress(p.currentDir, root)}`,
+        }),
+      ),
+  );
+
+  if (found.length === 0) {
+    vscode.window.showErrorMessage(
+      `No LeRobot dataset (meta/info.json) found in or under ${root}.`,
+    );
+    return undefined;
+  }
+
+  type Item = vscode.QuickPickItem & { path: string };
+  const items: Item[] = found
+    .slice()
+    .sort((a, b) => a.localeCompare(b))
+    .map((p) => {
+      const rel = posix.relative(root, p);
+      return {
+        label: `$(database) ${posix.basename(p) || p}`,
+        description: rel.length === 0 ? "(this folder)" : rel,
+        detail: p,
+        path: p,
+      };
+    });
+  const title =
+    found.length === 1
+      ? `Found 1 dataset under ${root}`
+      : `${found.length} datasets under ${root}`;
+  const pick = await vscode.window.showQuickPick(items, {
+    title,
+    placeHolder: "Select a dataset to add",
+    ignoreFocusOut: true,
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  return pick?.path;
+}
+
+function shortenSshProgress(full: string, root: string): string {
+  const rel = posix.relative(root, full);
+  const display = rel.length === 0 ? "." : rel;
+  return display.length > 60 ? "…" + display.slice(-58) : display;
 }
 
 function parseUserHostPort(raw: string): Omit<SshTarget, "remotePath"> {

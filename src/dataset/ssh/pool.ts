@@ -19,7 +19,7 @@
 import type SftpClient from "ssh2-sftp-client";
 import { log } from "../../log";
 import type { SshTarget } from "../../types";
-import { connectWithRetry } from "./connection";
+import { clearSessionPasswords, connectWithRetry } from "./connection";
 
 interface PoolEntry {
   sftp: SftpClient;
@@ -183,6 +183,8 @@ export function setPinnedTargets(targets: SshTarget[]): void {
 export async function disposeSshPool(): Promise<void> {
   const entries = Array.from(pool.values());
   pool.clear();
+  pinnedKeys.clear();
+  clearSessionPasswords();
   for (const e of entries) {
     if (e.idleTimer) {
       clearTimeout(e.idleTimer);

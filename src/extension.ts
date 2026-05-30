@@ -26,6 +26,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Collapse-all is removed so the navigation toolbar can host the SSH
     // button; users can still collapse a node by clicking its chevron.
     showCollapseAll: false,
+    // Allow multi-select so users can batch-assign tasks to episodes.
+    canSelectMany: true,
   });
   context.subscriptions.push(treeView);
 
@@ -35,7 +37,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const metadataViewer = new MetadataViewerPanelManager(context, service);
   context.subscriptions.push(metadataViewer);
 
-  registerCommands(context, service, previews, metadataViewer, tree);
+  registerCommands(context, service, previews, metadataViewer, tree, treeView);
 
   // Refresh the tree whenever workspace folders change so freshly-opened
   // folders get scanned.

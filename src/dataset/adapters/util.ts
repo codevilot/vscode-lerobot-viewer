@@ -30,6 +30,15 @@ export async function readJsonlIfExists(file: string): Promise<Record<string, un
   return out;
 }
 
+/**
+ * Serialize an array of records to newline-delimited JSON. A trailing
+ * newline is appended so the file is a valid text file.
+ */
+export async function writeJsonl(file: string, records: Record<string, unknown>[]): Promise<void> {
+  const lines = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
+  await fs.writeFile(file, lines, "utf8");
+}
+
 export async function exists(p: string): Promise<boolean> {
   try {
     await fs.access(p);

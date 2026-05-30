@@ -34,6 +34,8 @@ export const CommandIds = {
   scanWorkspace: "lerobotViewer.scanWorkspace",
   revealInExplorer: "lerobotViewer.revealInExplorer",
   cleanSshCache: "lerobotViewer.cleanSshCache",
+  editTasks: "lerobotViewer.editTasks",
+  editEpisodeTasks: "lerobotViewer.editEpisodeTasks",
 } as const;
 
 interface PreviewArgs {
@@ -47,6 +49,7 @@ export function registerCommands(
   previews: EpisodePreviewPanelManager,
   metadataViewer: MetadataViewerPanelManager,
   tree: DatasetTreeProvider,
+  treeView: vscode.TreeView<unknown>,
 ): void {
   const reg = (id: string, handler: (...args: unknown[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, handler));
@@ -196,6 +199,30 @@ export function registerCommands(
     await launchRerun(snapshot, episode);
   });
 
+  reg(CommandIds.editTasks, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) {
+      void vscode.window.showInformationMessage("Use the context menu on a dataset to edit its tasks.");
+      return;
+    }
+    await runTaskEditor(service, datasetId);
+  });
+
+  reg(CommandIds.editEpisodeTasks, async () => {
+    // Use treeView.selection directly — this is the only reliable way to
+    // get multi-selected items across all VS Code versions. Command args
+    // from context menus vary in format (array vs spread vs nothing).
+    const nodes = extractEpisodeNodesFromSelection(treeView.selection);
+    if (nodes.length === 0) {
+      void vscode.window.showInformationMessage("Select one or more episodes first.");
+      return;
+    }
+    const datasetId = nodes[0].datasetId;
+    const episodeIndices = nodes.map((n) => n.episode.episodeIndex);
+    await runEpisodeTaskPicker(service, datasetId, episodeIndices);
+  });
+
   reg(CommandIds.revealInExplorer, async (...args: unknown[]) => {
     const arg = args[0];
     if (isDatasetNode(arg) && arg.descriptor.root) {
@@ -206,6 +233,303 @@ export function registerCommands(
   log("Commands registered");
 }
 
+// ---- Task editor QuickPick flow ----
+
+interface TaskPickItem extends vscode.QuickPickItem {
+  actionKind: "action-add" | "task";
+  taskName?: string;
+  taskIndex?: number;
+}
+
+interface TaskActionItem extends vscode.QuickPickItem {
+  actionKind: "action-rename" | "action-delete" | "action-back";
+  taskName?: string;
+}
+
+async function runTaskEditor(service: DatasetService, datasetId: string): Promise<void> {
+  const descriptor = service.get(datasetId);
+  if (!descriptor) return;
+
+  // Guard SSH / remote datasets early.
+  if (descriptor.source === "ssh") {
+    void vscode.window.showInformationMessage("Task editing is not supported for SSH datasets.");
+    return;
+  }
+
+  try {
+    const snapshot = await service.getSnapshot(datasetId);
+    await showMainMenu(service, datasetId, snapshot.tasks);
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Could not edit tasks: ${(err as Error).message}`);
+  }
+}
+
+async function showMainMenu(service: DatasetService, datasetId: string, tasks: { taskIndex: number; task: string }[]): Promise<void> {
+  const items: TaskPickItem[] = [
+    {
+      actionKind: "action-add",
+      label: "$(add) Add Task",
+      description: "Create a new task definition",
+    },
+  ];
+
+  if (tasks.length > 0) {
+    items.push({
+      actionKind: "action-add",
+      label: "",
+      description: "",
+      // Separator spacer — empty label hides line.
+    } as TaskPickItem);
+  }
+
+  for (const t of tasks) {
+    items.push({
+      actionKind: "task",
+      label: `[${t.taskIndex}] ${t.task}`,
+      taskName: t.task,
+      taskIndex: t.taskIndex,
+    });
+  }
+
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: tasks.length === 0 ? "No tasks defined. Use $(add) Add Task." : "Select a task to edit, or add a new one",
+    matchOnDescription: false,
+  });
+  if (!pick) return;
+
+  if (pick.actionKind === "action-add") {
+    await runAddTask(service, datasetId, tasks);
+    return;
+  }
+
+  if (pick.actionKind === "task" && pick.taskName) {
+    await showTaskActions(service, datasetId, pick.taskName, tasks);
+  }
+}
+
+async function showTaskActions(
+  service: DatasetService,
+  datasetId: string,
+  taskName: string,
+  tasks: { taskIndex: number; task: string }[],
+): Promise<void> {
+  const items: TaskActionItem[] = [
+    { actionKind: "action-rename", label: `$(edit) Rename "${taskName}"`, taskName },
+    { actionKind: "action-delete", label: `$(trash) Delete "${taskName}"`, taskName },
+  ];
+
+  // Only show back button if there are tasks to go back to.
+  if (tasks.length > 0) {
+    items.push({ actionKind: "action-back", label: "$(arrow-left) Back to task list" });
+  }
+
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: `Task: ${taskName}`,
+  });
+  if (!pick) return;
+
+  if (pick.actionKind === "action-rename") {
+    await runRenameTask(service, datasetId, taskName, tasks);
+  } else if (pick.actionKind === "action-delete") {
+    await runDeleteTask(service, datasetId, taskName);
+  } else if (pick.actionKind === "action-back") {
+    await showMainMenu(service, datasetId, tasks);
+  }
+}
+
+async function runAddTask(
+  service: DatasetService,
+  datasetId: string,
+  tasks: { taskIndex: number; task: string }[],
+): Promise<void> {
+  const name = await vscode.window.showInputBox({
+    prompt: "New task name",
+    placeHolder: "e.g. pick up the red cube",
+    validateInput: (v) => {
+      if (!v.trim()) return "Task name cannot be empty.";
+      if (tasks.some((t) => t.task === v.trim())) return "A task with this name already exists.";
+      return undefined;
+    },
+  });
+  if (!name) return;
+
+  try {
+    await service.addTask(datasetId, name.trim());
+    void vscode.window.showInformationMessage(`Task "${name.trim()}" added.`);
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed to add task: ${(err as Error).message}`);
+    return;
+  }
+
+  // Refresh and show updated list.
+  try {
+    const refreshed = await service.getSnapshot(datasetId);
+    await showMainMenu(service, datasetId, refreshed.tasks);
+  } catch {
+    // If refresh fails, just return.
+  }
+}
+
+async function runRenameTask(
+  service: DatasetService,
+  datasetId: string,
+  oldName: string,
+  tasks: { taskIndex: number; task: string }[],
+): Promise<void> {
+  const newName = await vscode.window.showInputBox({
+    prompt: `Rename task "${oldName}"`,
+    value: oldName,
+    placeHolder: "Enter new task name",
+    validateInput: (v) => {
+      if (!v.trim()) return "Task name cannot be empty.";
+      if (v.trim() === oldName) return "Name is unchanged.";
+      if (tasks.some((t) => t.task === v.trim())) return "A task with this name already exists.";
+      return undefined;
+    },
+  });
+  if (!newName) return;
+
+  try {
+    await service.renameTask(datasetId, oldName, newName.trim());
+    void vscode.window.showInformationMessage(`Task renamed: "${oldName}" → "${newName.trim()}"`);
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed to rename task: ${(err as Error).message}`);
+    return;
+  }
+
+  try {
+    const refreshed = await service.getSnapshot(datasetId);
+    await showMainMenu(service, datasetId, refreshed.tasks);
+  } catch {
+    // ignore
+  }
+}
+
+async function runDeleteTask(
+  service: DatasetService,
+  datasetId: string,
+  taskName: string,
+): Promise<void> {
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete task "${taskName}"? This will also remove it from all episodes that reference it.`,
+    { modal: true },
+    "Delete",
+  );
+  if (confirm !== "Delete") return;
+
+  try {
+    await service.deleteTask(datasetId, taskName);
+    void vscode.window.showInformationMessage(`Task "${taskName}" deleted.`);
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed to delete task: ${(err as Error).message}`);
+    return;
+  }
+
+  try {
+    const refreshed = await service.getSnapshot(datasetId);
+    await showMainMenu(service, datasetId, refreshed.tasks);
+  } catch {
+    // ignore
+  }
+}
+
+// ---- Episode task assignment ----
+
+async function runEpisodeTaskPicker(
+  service: DatasetService,
+  datasetId: string,
+  episodeIndices: number[],
+): Promise<void> {
+  const descriptor = service.get(datasetId);
+  if (!descriptor) return;
+  if (descriptor.source === "ssh") {
+    void vscode.window.showInformationMessage("Task assignment is not supported for SSH datasets.");
+    return;
+  }
+
+  let snapshot;
+  try {
+    snapshot = await service.getSnapshot(datasetId);
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
+    return;
+  }
+
+  const allTasks = snapshot.tasks;
+  if (allTasks.length === 0) {
+    const create = await vscode.window.showInformationMessage(
+      "No tasks defined for this dataset. Create tasks first?",
+      "Edit Tasks",
+    );
+    if (create === "Edit Tasks") {
+      await vscode.commands.executeCommand(CommandIds.editTasks, { datasetId });
+    }
+    return;
+  }
+
+  // For multiple episodes, pre-select the intersection of all their tasks.
+  // For a single episode, pre-select its current tasks.
+  let commonTasks: Set<string>;
+  if (episodeIndices.length === 1) {
+    const ep = snapshot.episodes.find((e) => e.episodeIndex === episodeIndices[0]);
+    commonTasks = new Set(ep?.tasks ?? []);
+  } else {
+    const taskSets = episodeIndices.map((idx) => {
+      const ep = snapshot.episodes.find((e) => e.episodeIndex === idx);
+      return new Set(ep?.tasks ?? []);
+    });
+    commonTasks = taskSets[0] ? new Set(taskSets[0]) : new Set<string>();
+    for (let i = 1; i < taskSets.length; i++) {
+      for (const t of commonTasks) {
+        if (!taskSets[i].has(t)) commonTasks.delete(t);
+      }
+    }
+  }
+
+  const label = episodeIndices.length === 1
+    ? `Episode ${episodeIndices[0]}`
+    : `${episodeIndices.length} episodes`;
+
+  const qp = vscode.window.createQuickPick<vscode.QuickPickItem & { taskName: string }>();
+  qp.canSelectMany = true;
+  qp.title = `${label} · Assign Tasks`;
+  qp.placeholder = `Check tasks to assign${episodeIndices.length > 1 ? ` to ${episodeIndices.length} episodes` : ""}`;
+  qp.matchOnDescription = false;
+  qp.items = allTasks.map((t) => ({
+    label: t.task,
+    description: `[${t.taskIndex}]`,
+    taskName: t.task,
+    picked: commonTasks.has(t.task),
+  }));
+
+  const done = await new Promise<readonly { taskName: string }[] | undefined>((resolve) => {
+    qp.onDidAccept(() => {
+      resolve(qp.selectedItems);
+      qp.hide();
+    });
+    qp.onDidHide(() => resolve(undefined));
+    qp.show();
+  });
+
+  if (!done) return;
+
+  const newTasks = done.map((i) => i.taskName);
+  try {
+    for (const idx of episodeIndices) {
+      await service.setEpisodeTasks(datasetId, idx, newTasks);
+    }
+    const suffix = newTasks.length === 0
+      ? "all tasks removed"
+      : `assigned to "${newTasks.join(", ")}"`;
+    void vscode.window.showInformationMessage(
+      episodeIndices.length === 1
+        ? `Episode ${episodeIndices[0]}: ${suffix}.`
+        : `${episodeIndices.length} episodes: ${suffix}.`,
+    );
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed to update episode tasks: ${(err as Error).message}`);
+  }
+}
 async function pickEpisode(service: DatasetService): Promise<PreviewArgs | undefined> {
   const datasets = service.list();
   if (datasets.length === 0) {
@@ -369,4 +693,23 @@ function isDatasetIdArg(value: unknown): value is { datasetId: string } {
     typeof value === "object" &&
     typeof (value as { datasetId?: unknown }).datasetId === "string"
   );
+}
+
+/**
+ * Extract EpisodeNode items from the tree view selection.
+ * `treeView.selection` returns a readonly array of tree items — the
+ * same objects returned by the TreeDataProvider.
+ */
+function extractEpisodeNodesFromSelection(selection: readonly unknown[]): EpisodeNode[] {
+  const out: EpisodeNode[] = [];
+  for (const item of selection) {
+    if (isEpisodeNode(item)) out.push(item);
+    // Also accept nodes wrapped in an array (defensive).
+    if (Array.isArray(item)) {
+      for (const sub of item) {
+        if (isEpisodeNode(sub)) out.push(sub);
+      }
+    }
+  }
+  return out;
 }

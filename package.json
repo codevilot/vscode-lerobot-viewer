@@ -120,6 +120,16 @@
         "command": "lerobotViewer.cleanSshCache",
         "title": "LeRobot: Clean SSH cache",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "lerobotViewer.editTasks",
+        "title": "LeRobot: Edit Tasks",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "lerobotViewer.editEpisodeTasks",
+        "title": "LeRobot: Assign Tasks to Episode",
+        "icon": "$(checklist)"
       }
     ],
     "menus": {
@@ -152,6 +162,11 @@
           "group": "inline@0"
         },
         {
+          "command": "lerobotViewer.editEpisodeTasks",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotEpisode",
+          "group": "1_modify@0"
+        },
+        {
           "command": "lerobotViewer.previewEpisode",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotEpisode",
           "group": "inline@1"
@@ -170,6 +185,11 @@
           "command": "lerobotViewer.removeDataset",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@1"
+        },
+        {
+          "command": "lerobotViewer.editTasks",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@0"
         },
         {
           "command": "lerobotViewer.revealInExplorer",
@@ -192,6 +212,14 @@
         },
         {
           "command": "lerobotViewer.revealInExplorer",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.editTasks",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.editEpisodeTasks",
           "when": "false"
         }
       ]

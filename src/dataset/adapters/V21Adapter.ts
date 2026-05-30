@@ -22,6 +22,7 @@ import {
   readJsonlIfExists,
   synthesizeEpisodes,
   toStringArray,
+  writeJsonl,
 } from "./util";
 
 const DEFAULT_DATA_TEMPLATE = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet";
@@ -80,6 +81,19 @@ export class V21Adapter implements DatasetAdapter {
         .filter((t) => t.task.length > 0);
     }
     return [];
+  }
+
+  async saveTasks(root: string, tasks: TaskInfo[]): Promise<void> {
+    const records = tasks.map((t) => ({ task_index: t.taskIndex, task: t.task }));
+    await writeJsonl(path.join(root, "meta", "tasks.jsonl"), records);
+  }
+
+  async readEpisodeRecords(root: string): Promise<Record<string, unknown>[] | undefined> {
+    return readJsonlIfExists(path.join(root, "meta", "episodes.jsonl"));
+  }
+
+  async saveEpisodeRecords(root: string, records: Record<string, unknown>[]): Promise<void> {
+    await writeJsonl(path.join(root, "meta", "episodes.jsonl"), records);
   }
 
   async resolveDataFile(

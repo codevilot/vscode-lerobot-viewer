@@ -19,6 +19,7 @@ import {
 } from "./dataset/ssh";
 import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
+import { mergeDatasets } from "./dataset/mergeDataset";
 import type { SshTarget } from "./types";
 
 export const CommandIds = {
@@ -37,6 +38,7 @@ export const CommandIds = {
   cleanSshCache: "lerobotViewer.cleanSshCache",
   editTasks: "lerobotViewer.editTasks",
   editEpisodeTasks: "lerobotViewer.editEpisodeTasks",
+  mergeDatasets: "lerobotViewer.mergeDatasets",
 } as const;
 
 interface PreviewArgs {
@@ -222,6 +224,81 @@ export function registerCommands(
     const datasetId = nodes[0].datasetId;
     const episodeIndices = nodes.map((n) => n.episode.episodeIndex);
     await runEpisodeTaskPicker(service, datasetId, episodeIndices);
+  });
+
+  reg(CommandIds.mergeDatasets, async () => {
+    const datasets = extractDatasetNodes(treeView.selection);
+    if (datasets.length < 2) {
+      void vscode.window.showInformationMessage(
+        "Select 2 or more datasets (Ctrl/Shift+click) to merge.",
+      );
+      return;
+    }
+    // Reject SSH datasets.
+    const sshNames = datasets.filter((n) => n.descriptor.source === "ssh").map((n) => n.descriptor.name);
+    if (sshNames.length > 0) {
+      void vscode.window.showInformationMessage(
+        `SSH datasets cannot be merged: ${sshNames.join(", ")}. Download them locally first.`,
+      );
+      return;
+    }
+
+    // Pick target folder.
+    const targetUri = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      openLabel: "Select merge target folder",
+      title: "Pick an empty folder for the merged dataset",
+    });
+    if (!targetUri || targetUri.length === 0) return;
+    const targetRoot = targetUri[0].fsPath;
+
+    // Load snapshots.
+    const snapshots: Awaited<ReturnType<typeof service.getSnapshot>>[] = [];
+    for (const ds of datasets) {
+      try {
+        snapshots.push(await service.getSnapshot(ds.descriptor.id));
+      } catch (err) {
+        void vscode.window.showErrorMessage(
+          `Could not load "${ds.descriptor.name}": ${(err as Error).message}`,
+        );
+        return;
+      }
+    }
+
+    // Merge with progress.
+    try {
+      const result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Merging datasets",
+          cancellable: false,
+        },
+        async (progress) => {
+          let lastReport = 0;
+          return mergeDatasets(snapshots, targetRoot, (p) => {
+            // Throttle progress reports.
+            if (p.done - lastReport >= 1 || p.done === p.total || p.done === 0) {
+              lastReport = p.done;
+              progress.report({
+                message: `${p.done}/${p.total} episodes`,
+              });
+            }
+          });
+        },
+      );
+
+      void vscode.window.showInformationMessage(
+        `Merged ${datasets.length} datasets → ${result.totalEpisodes} episodes, ` +
+          `${result.totalFrames} frames, ${result.totalTasks} tasks.`,
+      );
+
+      // Register the merged dataset.
+      await service.addLocalFolder(vscode.Uri.file(targetRoot));
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Merge failed: ${(err as Error).message}`);
+    }
   });
 
   reg(CommandIds.deleteEpisode, async (...args: unknown[]) => {
@@ -743,6 +820,22 @@ function extractEpisodeNodesFromSelection(selection: readonly unknown[]): Episod
     if (Array.isArray(item)) {
       for (const sub of item) {
         if (isEpisodeNode(sub)) out.push(sub);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Extract DatasetNode items from the tree view selection.
+ */
+function extractDatasetNodes(selection: readonly unknown[]): DatasetNode[] {
+  const out: DatasetNode[] = [];
+  for (const item of selection) {
+    if (isDatasetNode(item)) out.push(item);
+    if (Array.isArray(item)) {
+      for (const sub of item) {
+        if (isDatasetNode(sub)) out.push(sub);
       }
     }
   }

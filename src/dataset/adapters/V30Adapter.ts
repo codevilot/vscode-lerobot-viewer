@@ -192,7 +192,21 @@ export class V30Adapter implements DatasetAdapter {
     const abs = joinPath(ctx.root, filled);
     if (!(await exists(abs))) return undefined;
     const location: VideoLocation = { path: abs };
-    if (episode.frameRange) location.shardFrameRange = episode.frameRange;
+    // Use per-camera video timestamp range to compute shard frame range.
+    // Do NOT use episode.frameRange (global dataset indices) — that's
+    // for data parquet alignment, not video playback clipping.
+    const videoRange = episode.videoRanges?.[videoKey];
+    if (videoRange) {
+      location.shardFrameRange = [
+        Math.round(videoRange[0] * ctx.info.fps),
+        Math.round(videoRange[1] * ctx.info.fps),
+      ];
+    } else {
+      // Fallback when per-camera timestamp ranges are unavailable:
+      // assume the video file contains exactly this episode's frames
+      // starting from time 0 (common in pre-cut per-episode layouts).
+      location.shardFrameRange = [0, episode.length];
+    }
     if (note) location.note = note;
     return location;
   }

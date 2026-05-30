@@ -14,7 +14,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { log, logError } from "../log";
-import type { DatasetDescriptor, DatasetSnapshot, SshTarget } from "../types";
+import type { DatasetDescriptor, DatasetSnapshot, LeRobotEpisode, SshTarget } from "../types";
 import { ensureHuggingFaceDataset } from "./huggingface";
 import { isLeRobotDataset, loadDataset } from "./datasetLoader";
 import { detectDatasetVersion } from "./DatasetVersionDetector";
@@ -27,6 +27,7 @@ import {
   sshCacheRoot,
   SSH_CACHE_LAST_ACCESS,
 } from "./ssh";
+import { buildDataPath, buildVideoPath, exists } from "./adapters/util";
 
 const STATE_KEY = "lerobotViewer.descriptors";
 
@@ -389,6 +390,92 @@ export class DatasetService implements vscode.Disposable {
     this.persist();
     this._onDidChange.fire();
     log(`Workspace scan complete: ${found.length} dataset(s) found`);
+  }
+
+  async deleteEpisode(datasetId: string, episodeIndex: number): Promise<void> {
+    const descriptor = this.get(datasetId);
+    if (!descriptor) throw new Error(`Unknown dataset id: ${datasetId}`);
+    if (!descriptor.root) throw new Error("Dataset root is unavailable.");
+    if (descriptor.source === "ssh") {
+      throw new Error("Deleting episodes from SSH datasets is not supported.");
+    }
+
+    const snapshot = await this.getSnapshot(datasetId);
+    const episode = snapshot.episodes.find((ep) => ep.episodeIndex === episodeIndex);
+    if (!episode) throw new Error(`Episode ${episodeIndex} not found.`);
+
+    if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1") {
+      throw new Error("Episode deletion is currently supported only for LeRobot v2.x datasets.");
+    }
+
+    await this.deleteV2Episode(descriptor.root, snapshot, episode);
+    this.invalidate(datasetId);
+  }
+
+  private async persistV2EpisodeMetadata(root: string, episodeIndex: number): Promise<void> {
+    const metaFile = path.join(root, "meta", "episodes.jsonl");
+    if (!(await exists(metaFile))) {
+      throw new Error("Could not delete episode: v2 episode metadata file meta/episodes.jsonl is missing.");
+    }
+
+    const raw = await fs.readFile(metaFile, "utf8");
+    const lines = raw.split("\n").filter((line) => line.trim().length > 0);
+    const output: string[] = [];
+    let removed = 0;
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        const idx = Number(obj.episode_index ?? obj.episodeIndex ?? NaN);
+        if (!Number.isNaN(idx) && idx === episodeIndex) {
+          removed++;
+          continue;
+        }
+      } catch {
+        // Preserve malformed lines; deleting only by matching episode index.
+      }
+      output.push(line);
+    }
+
+    if (removed === 0) {
+      throw new Error(`Could not delete episode: episode ${episodeIndex} was not found in meta/episodes.jsonl.`);
+    }
+    await fs.writeFile(metaFile, output.join("\n") + (output.length > 0 ? "\n" : ""), "utf8");
+  }
+
+  private async deleteV2EpisodeFiles(root: string, snapshot: DatasetSnapshot, episode: LeRobotEpisode): Promise<void> {
+    const chunkSize = snapshot.info.chunksSize ?? 1000;
+    const chunkIndex = Math.floor(episode.episodeIndex / chunkSize);
+    const dataTemplate = snapshot.info.dataPath ?? "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet";
+    const videoTemplate = snapshot.info.videoPath ?? "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4";
+    const dataRel = buildDataPath({
+      template: dataTemplate,
+      chunkIndex,
+      fileIndex: 0,
+      episodeIndex: episode.episodeIndex,
+    });
+    const candidates = [path.join(root, dataRel)];
+
+    for (const videoKey of snapshot.cameraKeys) {
+      const videoRel = buildVideoPath({
+        template: videoTemplate,
+        chunkIndex,
+        fileIndex: 0,
+        episodeIndex: episode.episodeIndex,
+        videoKey,
+      });
+      candidates.push(path.join(root, videoRel));
+    }
+
+    for (const candidate of candidates) {
+      if (await exists(candidate)) {
+        await fs.rm(candidate, { force: true });
+      }
+    }
+  }
+
+  private async deleteV2Episode(root: string, snapshot: DatasetSnapshot, episode: LeRobotEpisode): Promise<void> {
+    await this.deleteV2EpisodeFiles(root, snapshot, episode);
+    await this.persistV2EpisodeMetadata(root, episode.episodeIndex);
   }
 
   dispose(): void {

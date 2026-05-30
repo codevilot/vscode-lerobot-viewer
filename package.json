@@ -82,6 +82,11 @@
         "icon": "$(rocket)"
       },
       {
+        "command": "lerobotViewer.deleteEpisode",
+        "title": "LeRobot: Delete Episode",
+        "icon": "$(trash)"
+      },
+      {
         "command": "lerobotViewer.addDatasetFolder",
         "title": "LeRobot: Add Dataset Folder",
         "icon": "$(add)"
@@ -172,9 +177,14 @@
           "group": "inline@1"
         },
         {
+          "command": "lerobotViewer.deleteEpisode",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotEpisode",
+          "group": "inline@2"
+        },
+        {
           "command": "lerobotViewer.openInRerun",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotEpisode && config.lerobotViewer.enableRerun",
-          "group": "inline@2"
+          "group": "inline@3"
         },
         {
           "command": "lerobotViewer.openInRerun",

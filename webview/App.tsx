@@ -84,7 +84,23 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
   const fps = data.info.fps || 30;
   const totalFrames = data.episode.length ?? 0;
 
-  const playback = usePlayback(videoRefs, fps, totalFrames);
+  // For v3.0 datasets, compute the shard frame offset from the first camera's
+  // shardFrameRange. All cameras of a single episode should share the same range.
+  const shardFrameOffset = useMemo(() => {
+    if (data.cameras.length === 0) return undefined;
+    const firstRange = data.cameras[0].shardFrameRange;
+    if (!firstRange) return undefined;
+    // Validate all cameras have consistent ranges (they should within one episode)
+    const allConsistent = data.cameras.every(
+      (cam) => !cam.shardFrameRange || cam.shardFrameRange[0] === firstRange[0],
+    );
+    if (!allConsistent) {
+      console.warn("v3.0: cameras have mismatched shard frame ranges; using first camera's offset");
+    }
+    return firstRange[0];
+  }, [data.cameras]);
+
+  const playback = usePlayback(videoRefs, fps, totalFrames, shardFrameOffset);
   usePlaybackShortcuts(playback, fps, totalFrames);
 
   useEffect(() => {

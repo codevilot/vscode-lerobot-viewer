@@ -24,6 +24,7 @@ export function usePlayback(
   videoRefs: RefObject<Map<string, HTMLVideoElement>>,
   fps: number,
   totalFrames: number,
+  shardFrameOffset?: number,
 ): PlaybackController {
   const [frame, setFrame] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -33,8 +34,25 @@ export function usePlayback(
   // Refs avoid re-binding the rAF loop on every render.
   const fpsRef = useRef(fps);
   const totalFramesRef = useRef(totalFrames);
+  const shardOffsetRef = useRef(shardFrameOffset ?? 0);
   fpsRef.current = fps;
   totalFramesRef.current = totalFrames;
+  shardOffsetRef.current = shardFrameOffset ?? 0;
+
+  // Initialize video currentTime when shard offset changes (v3.0 sharded layouts).
+  // This ensures videos start at the correct position within the shard.
+  useEffect(() => {
+    const map = videoRefs.current;
+    if (!map || shardFrameOffset === undefined) return;
+    const initialTime = shardFrameOffset / Math.max(1, fpsRef.current);
+    for (const v of map.values()) {
+      if (!isNaN(initialTime) && isFinite(initialTime)) {
+        v.currentTime = initialTime;
+      }
+    }
+    // Also reset frame display to 0 when shard offset changes
+    setFrame(0);
+  }, [shardFrameOffset, videoRefs]);
 
   // Push speed/loop into every <video>.
   useEffect(() => {
@@ -56,12 +74,13 @@ export function usePlayback(
       const first = map?.values().next().value;
       if (first) {
         const t = first.currentTime;
-        let f = t * fpsRef.current;
+        let f = t * fpsRef.current - shardOffsetRef.current;
         const max = Math.max(0, totalFramesRef.current - 1);
         if (f >= max) {
           if (loop) {
             f = 0;
-            if (map) for (const v of map.values()) v.currentTime = 0;
+            const resetTime = shardOffsetRef.current / Math.max(1, fpsRef.current);
+            if (map) for (const v of map.values()) v.currentTime = resetTime;
           } else {
             f = max;
             setIsPlaying(false);
@@ -80,7 +99,7 @@ export function usePlayback(
       const max = Math.max(0, totalFramesRef.current - 1);
       const clamped = Math.min(max, Math.max(0, target));
       setFrame(clamped);
-      const time = clamped / Math.max(1, fpsRef.current);
+      const time = (shardOffsetRef.current + clamped) / Math.max(1, fpsRef.current);
       const map = videoRefs.current;
       if (!map) return;
       for (const v of map.values()) v.currentTime = time;

@@ -35,7 +35,7 @@ const extensionBuild = {
   // then reported "command 'lerobotViewer.addDatasetFolder' not found" (and
   // the rest) for every button in the welcome view. Bundling the JS deps
   // takes vsce out of the loop for them.
-  external: ["vscode", "ssh2", "cpu-features"],
+  external: ["vscode", "ssh2", "cpu-features", "parquetjs"],
   sourcemap: !production,
   minify: production,
   logLevel: "info",

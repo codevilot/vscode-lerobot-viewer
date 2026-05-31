@@ -20,6 +20,7 @@ import {
 import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
 import { mergeDatasets } from "./dataset/mergeDataset";
+import { convertV3ToV21 } from "./dataset/convertV3ToV21";
 import type { SshTarget } from "./types";
 
 export const CommandIds = {
@@ -39,6 +40,7 @@ export const CommandIds = {
   editTasks: "lerobotViewer.editTasks",
   editEpisodeTasks: "lerobotViewer.editEpisodeTasks",
   mergeDatasets: "lerobotViewer.mergeDatasets",
+  convertToV21: "lerobotViewer.convertToV21",
 } as const;
 
 interface PreviewArgs {
@@ -298,6 +300,83 @@ export function registerCommands(
       await service.addLocalFolder(vscode.Uri.file(targetRoot));
     } catch (err) {
       void vscode.window.showErrorMessage(`Merge failed: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.convertToV21, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) {
+      void vscode.window.showInformationMessage("Use the context menu on a v3.0 dataset to convert.");
+      return;
+    }
+    const descriptor = service.get(datasetId);
+    if (!descriptor || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Conversion is not supported for SSH datasets.");
+      return;
+    }
+    if (!descriptor.root) {
+      void vscode.window.showInformationMessage("Dataset has no local root.");
+      return;
+    }
+
+    // Load snapshot to check version.
+    let snapshot;
+    try {
+      snapshot = await service.getSnapshot(datasetId);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
+      return;
+    }
+    if (snapshot.version !== "v3.0") {
+      void vscode.window.showInformationMessage(
+        `Dataset "${descriptor.name}" is ${snapshot.version}. Only v3.0 datasets need conversion.`,
+      );
+      return;
+    }
+
+    // Pick target folder.
+    const targetUri = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      openLabel: "Select target folder for v2.1 dataset",
+      title: "Pick an empty folder for the converted v2.1 dataset",
+    });
+    if (!targetUri || targetUri.length === 0) return;
+    const targetRoot = targetUri[0].fsPath;
+
+    try {
+      const result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Converting ${descriptor.name} to v2.1`,
+          cancellable: false,
+        },
+        async (progress) => {
+          let lastReport = 0;
+          return convertV3ToV21(descriptor.root!, targetRoot, (p) => {
+            if (p.done - lastReport >= 1 || p.done === p.total || p.done === 0) {
+              lastReport = p.done;
+              progress.report({
+                message: `${p.done}/${p.total} · ${p.current}`,
+              });
+            }
+          });
+        },
+      );
+
+      let msg = `Converted to v2.1: ${result.totalEpisodes} episodes, ${result.totalFrames} frames.`;
+      if (result.warnings.length > 0) {
+        msg += ` (${result.warnings.length} warning${result.warnings.length > 1 ? "s" : ""})`;
+        log(`v3→v2.1 warnings for ${descriptor.name}: ${result.warnings.join("; ")}`);
+      }
+      void vscode.window.showInformationMessage(msg);
+
+      // Register the converted dataset.
+      await service.addLocalFolder(vscode.Uri.file(targetRoot));
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Conversion failed: ${(err as Error).message}`);
     }
   });
 

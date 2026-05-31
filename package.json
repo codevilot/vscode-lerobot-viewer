@@ -140,6 +140,11 @@
         "command": "lerobotViewer.mergeDatasets",
         "title": "LeRobot: Merge Datasets",
         "icon": "$(merge)"
+      },
+      {
+        "command": "lerobotViewer.convertToV21",
+        "title": "LeRobot: Convert to v2.1",
+        "icon": "$(export)"
       }
     ],
     "menus": {
@@ -212,9 +217,14 @@
           "group": "1_modify@2"
         },
         {
-          "command": "lerobotViewer.revealInExplorer",
+          "command": "lerobotViewer.convertToV21",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@3"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@4"
         }
       ],
       "commandPalette": [
@@ -244,6 +254,10 @@
         },
         {
           "command": "lerobotViewer.mergeDatasets",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.convertToV21",
           "when": "false"
         }
       ]
@@ -292,6 +306,7 @@
   "dependencies": {
     "@types/ssh2-sftp-client": "^9.0.6",
     "hyparquet": "^1.25.8",
+    "parquetjs": "^0.11.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "ssh2-sftp-client": "^12.1.1"

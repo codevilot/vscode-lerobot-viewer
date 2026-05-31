@@ -188,7 +188,8 @@ export async function convertV3ToV21(
   }
 
   // 5. Write v2.1 metadata.
-  const v21Info = buildV21Info(info, episodes.length, totalFrames, tasks.length, chunksSize);
+  const cameraCount = Object.values(info.features).filter((f) => f.dtype === "video").length;
+  const v21Info = buildV21Info(info, episodes.length, totalFrames, tasks.length, cameraCount, chunksSize);
   await fs.writeFile(
     path.join(targetRoot, "meta", "info.json"),
     JSON.stringify(v21Info, null, 2),
@@ -386,6 +387,7 @@ function buildV21Info(
   totalEpisodes: number,
   totalFrames: number,
   totalTasks: number,
+  cameraCount: number,
   chunksSize: number,
 ): Record<string, unknown> {
   // Convert v3.0 features to v2.1-compatible format.
@@ -404,7 +406,7 @@ function buildV21Info(
     total_episodes: totalEpisodes,
     total_frames: totalFrames,
     total_tasks: totalTasks,
-    total_videos: 0, // Will be computed when loaded.
+    total_videos: totalEpisodes * cameraCount,
     total_chunks: Math.ceil(totalEpisodes / chunksSize),
     chunks_size: chunksSize,
     data_path: "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",

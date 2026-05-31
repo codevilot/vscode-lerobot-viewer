@@ -12,6 +12,7 @@ import {
   buildDataPath,
   buildVideoPath,
   exists,
+  readJsonlIfExists,
   writeJsonl,
 } from "./adapters/util";
 
@@ -143,6 +144,32 @@ export async function mergeDatasets(
     task: t.task,
   }));
   await writeJsonl(path.join(targetRoot, "meta", "tasks.jsonl"), taskRecords);
+
+  // ---- merge per-episode stats (re-index only, no recomputation) ----
+  const allEpStats: Record<string, unknown>[] = [];
+  let epOffset = 0;
+  for (const snap of snapshots) {
+    const srcStats = await readJsonlIfExists(
+      path.join(snap.descriptor.root!, "meta", "episodes_stats.jsonl"),
+    );
+    if (srcStats) {
+      for (const rec of srcStats) {
+        // Normalize: ensure stats are under "stats" key.
+        const statsObj = (rec as Record<string, unknown>).stats ?? rec;
+        const newRec: Record<string, unknown> = {
+          episode_index: epOffset++,
+          stats: statsObj,
+        };
+        allEpStats.push(newRec);
+      }
+    } else {
+      // No stats for this source — skip with gap.
+      epOffset += snap.episodes.length;
+    }
+  }
+  if (allEpStats.length > 0) {
+    await writeJsonl(path.join(targetRoot, "meta", "episodes_stats.jsonl"), allEpStats);
+  }
 
   return { totalEpisodes: total, totalFrames, totalTasks: mergedTasks.length };
 }

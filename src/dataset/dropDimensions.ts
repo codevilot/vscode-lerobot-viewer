@@ -97,7 +97,7 @@ export async function dropDimensions(
     // Per-episode stats.
     epStatsRecords.push({
       episode_index: ep.episodeIndex,
-      ...computeEpStats(trimmedRows),
+      stats: computeEpStats(trimmedRows),
     });
 
     // Atomic replace.
@@ -122,10 +122,13 @@ export async function dropDimensions(
       for (let i = 0; i < epStatsRecords.length && i < oldStats.length; i++) {
         const oldRec = oldStats[i];
         const newRec = epStatsRecords[i];
-        for (const k of Object.keys(oldRec)) {
+        // Copy old stats entries that aren't already recomputed.
+        const oldStatsObj = (oldRec.stats ?? oldRec) as Record<string, unknown>;
+        const newStatsObj = newRec.stats as Record<string, unknown>;
+        for (const k of Object.keys(oldStatsObj)) {
           if (k === "episode_index") continue;
-          if (k in newRec) continue;
-          newRec[k] = oldRec[k];
+          if (k in (newStatsObj ?? {})) continue;
+          if (newStatsObj) newStatsObj[k] = oldStatsObj[k];
         }
       }
     }

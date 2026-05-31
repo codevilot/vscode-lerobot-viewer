@@ -47,7 +47,7 @@ export async function recomputeStats(
     globalAcc.ingest(clean);
     epStatsRecords.push({
       episode_index: ep.episodeIndex,
-      ...epAcc.toPerEpisode(resolveKey),
+      stats: epAcc.toPerEpisode(resolveKey),
     });
     onProgress({ done: i + 1, total: episodes.length });
   }
@@ -70,10 +70,11 @@ export async function recomputeStats(
     }
   }
 
-  // Merge video stats into per-episode records.
+  // Merge video stats into per-episode records (under "stats" key).
   if ((globalAcc as any)._videoStats) {
     for (const rec of epStatsRecords) {
-      Object.assign(rec, (globalAcc as any)._videoStats);
+      const s = (rec as Record<string, unknown>).stats as Record<string, unknown>;
+      if (s) Object.assign(s, (globalAcc as any)._videoStats);
     }
   }
   await writeJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);

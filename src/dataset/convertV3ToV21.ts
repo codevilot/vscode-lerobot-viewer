@@ -133,7 +133,7 @@ export async function convertV3ToV21(
         epStats.ingest(cleanRows);
         epStatsRecords.push({
           episode_index: newIdx,
-          ...epStats.toPerEpisode(featureKeyMap(info)),
+          stats: epStats.toPerEpisode(featureKeyMap(info)),
         });
 
         const dstRel = buildDataPath({

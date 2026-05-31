@@ -57,6 +57,7 @@ export async function dropDimensions(
   const adapterInfo = await adapter.loadInfo(root);
   const episodes = await adapter.loadEpisodes({ root, info: adapterInfo });
   const total = episodes.length;
+  const epStatsRecords: Record<string, unknown>[] = [];
 
   for (let i = 0; i < episodes.length; i++) {
     const ep = episodes[i];
@@ -80,6 +81,7 @@ export async function dropDimensions(
 
     const tmpPath = dataPath + ".tmp";
     const writer = await pjs.ParquetWriter.openFile(schema, tmpPath, { compression: "UNCOMPRESSED" });
+    const trimmedRows: Record<string, unknown>[] = [];
     for (const row of rows) {
       const clean = sanitizeRow(row);
       // Drop dimensions from the target column.
@@ -87,9 +89,16 @@ export async function dropDimensions(
         const arr = clean[featureKey] as number[];
         clean[featureKey] = keepIndices.map((k) => arr[k]);
       }
+      trimmedRows.push(clean);
       await writer.appendRow(clean);
     }
     await writer.close();
+
+    // Per-episode stats.
+    epStatsRecords.push({
+      episode_index: ep.episodeIndex,
+      ...computeEpStats(trimmedRows),
+    });
 
     // Atomic replace.
     await fs.rename(tmpPath, dataPath);
@@ -106,10 +115,12 @@ export async function dropDimensions(
     "utf8",
   );
 
-  // 4. Invalidate stats.
-  for (const f of ["stats.json", "episodes_stats.jsonl"]) {
-    const p = path.join(root, "meta", f);
-    try { await fs.unlink(p); } catch { /* ok if missing */ }
+  // 4. Write regenerated per-episode stats.
+  if (epStatsRecords.length > 0) {
+    const { writeJsonl } = await import("./adapters/util");
+    await writeJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
+    // Remove global stats (invalidated by dimension change).
+    try { await fs.unlink(path.join(root, "meta", "stats.json")); } catch { /* ok */ }
   }
 }
 
@@ -125,6 +136,49 @@ function sanitizeRow(row: Record<string, unknown>): Record<string, unknown> {
     } else {
       out[key] = value;
     }
+  }
+  return out;
+}
+
+/** Compute per-episode min/max/mean/std for each numeric column. */
+function computeEpStats(rows: Record<string, unknown>[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (rows.length === 0) return out;
+  // Gather column keys from the first row.
+  const keys = Object.keys(rows[0]).filter((k) => {
+    const v = rows[0][k];
+    if (v === null || v === undefined) return false;
+    return typeof v === "number" || Array.isArray(v);
+  });
+  for (const key of keys) {
+    const first = rows[0][key];
+    const n = Array.isArray(first) ? (first as number[]).length : 1;
+    const flat = rows.map((r) => {
+      const v = r[key];
+      return Array.isArray(v) ? (v as number[]) : [v as number];
+    });
+    const mins = new Array(n).fill(Infinity);
+    const maxs = new Array(n).fill(-Infinity);
+    const means = new Array(n).fill(0);
+    const m2s = new Array(n).fill(0);
+    const count = flat.length;
+    for (let i = 0; i < count; i++) {
+      for (let j = 0; j < n; j++) {
+        const x = flat[i][j];
+        if (x < mins[j]) mins[j] = x;
+        if (x > maxs[j]) maxs[j] = x;
+        const delta = x - means[j];
+        means[j] += delta / (i + 1);
+        const delta2 = x - means[j];
+        m2s[j] += delta * delta2;
+      }
+    }
+    out[key] = {
+      min: mins,
+      max: maxs,
+      mean: means,
+      std: m2s.map((m2) => Math.sqrt(m2 / count)),
+    };
   }
   return out;
 }

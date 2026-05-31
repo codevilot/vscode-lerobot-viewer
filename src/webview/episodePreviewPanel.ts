@@ -124,9 +124,16 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
         let sz = 0;
         try { sz = (await import("node:fs/promises").then((m) => m.stat(resolved.uri.fsPath))).size; } catch { /* ok */ }
         const useStreaming = sz > 50 * 1024 * 1024;
-        const videoUri = useStreaming
-          ? await serveVideo(resolved.uri.fsPath)
-          : this.panel.webview.asWebviewUri(resolved.uri).toString();
+        let videoUri: string;
+        if (useStreaming) {
+          try {
+            videoUri = await serveVideo(resolved.uri.fsPath);
+          } catch {
+            videoUri = this.panel.webview.asWebviewUri(resolved.uri).toString();
+          }
+        } else {
+          videoUri = this.panel.webview.asWebviewUri(resolved.uri).toString();
+        }
         return {
           key,
           videoUri,

@@ -460,12 +460,47 @@ export function registerCommands(
     );
     if (confirm !== "Drop") return;
 
+    // Ask: in-place or save-as?
+    const saveChoice = await vscode.window.showQuickPick(
+      [
+        { label: "$(edit) Modify in-place", description: "Rewrite parquet files directly in the source dataset" },
+        { label: "$(save-as) Save as new dataset", description: "Copy to a new folder first, then modify" },
+      ],
+      { placeHolder: "How would you like to apply the changes?" },
+    );
+    if (!saveChoice) return;
+
+    let workRoot = descriptor.root!;
+    let isCopy = false;
+    if (saveChoice.label.includes("Save as")) {
+      const targetUri = await vscode.window.showOpenDialog({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        canSelectMany: false,
+        openLabel: "Select target folder",
+        title: "Pick an empty folder for the modified dataset",
+      });
+      if (!targetUri || targetUri.length === 0) return;
+      workRoot = targetUri[0].fsPath;
+      isCopy = true;
+    }
+
     try {
+      if (isCopy) {
+        // Copy source dataset to target, then modify the copy.
+        const { copyDataset } = await import("./dataset/datasetCopy");
+        await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: "Copying dataset", cancellable: false },
+          async (progress) => {
+            await copyDataset(descriptor.root!, workRoot, (msg) => progress.report({ message: msg }));
+          },
+        );
+      }
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "Dropping dimensions", cancellable: false },
         async (progress) => {
           let last = 0;
-          await dropDimensions(descriptor.root!, targetFeature.key, keepIndices, (p) => {
+          await dropDimensions(workRoot, targetFeature.key, keepIndices, (p) => {
             if (p.done - last >= 1 || p.done === p.total) {
               last = p.done;
               progress.report({ message: `${p.done}/${p.total} episodes` });
@@ -475,8 +510,12 @@ export function registerCommands(
       );
       service.invalidate(datasetId);
       tree.refresh();
+      if (isCopy) {
+        await service.addLocalFolder(vscode.Uri.file(workRoot));
+      }
       void vscode.window.showInformationMessage(
-        `Dropped ${dropped} dimension${dropped > 1 ? "s" : ""} from "${targetFeature.key}".`,
+        `Dropped ${dropped} dimension${dropped > 1 ? "s" : ""} from "${targetFeature.key}".` +
+        (isCopy ? ` New dataset at ${workRoot}.` : ""),
       );
     } catch (err) {
       void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);

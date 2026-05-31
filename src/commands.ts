@@ -21,6 +21,7 @@ import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
 import { mergeDatasets } from "./dataset/mergeDataset";
 import { convertV3ToV21 } from "./dataset/convertV3ToV21";
+import { dropDimensions } from "./dataset/dropDimensions";
 import type { SshTarget } from "./types";
 
 export const CommandIds = {
@@ -41,6 +42,7 @@ export const CommandIds = {
   editEpisodeTasks: "lerobotViewer.editEpisodeTasks",
   mergeDatasets: "lerobotViewer.mergeDatasets",
   convertToV21: "lerobotViewer.convertToV21",
+  dropDimensions: "lerobotViewer.dropDimensions",
 } as const;
 
 interface PreviewArgs {
@@ -377,6 +379,107 @@ export function registerCommands(
       await service.addLocalFolder(vscode.Uri.file(targetRoot));
     } catch (err) {
       void vscode.window.showErrorMessage(`Conversion failed: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.dropDimensions, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) {
+      void vscode.window.showInformationMessage("Use the context menu on a dataset to drop dimensions.");
+      return;
+    }
+    const descriptor = service.get(datasetId);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Dimension dropping is only supported for local datasets.");
+      return;
+    }
+    let snapshot;
+    try { snapshot = await service.getSnapshot(datasetId); } catch (err) {
+      void vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
+      return;
+    }
+    if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1") {
+      void vscode.window.showInformationMessage("Dimension dropping is only supported for v2.x datasets.");
+      return;
+    }
+    const matrixFeatures: Array<{ key: string; shape: number[]; names?: string[] }> = [];
+    for (const key of [...snapshot.stateKeys, ...snapshot.actionKeys, ...snapshot.velocityKeys, ...snapshot.effortKeys, ...snapshot.environmentStateKeys]) {
+      const feat = snapshot.info.features[key];
+      if (feat?.shape && feat.shape.length === 1 && feat.shape[0] > 1) {
+        matrixFeatures.push({ key, shape: feat.shape, names: feat.names as string[] | undefined });
+      }
+    }
+    if (matrixFeatures.length === 0) {
+      void vscode.window.showInformationMessage("No matrix features with >1 dimension found.");
+      return;
+    }
+    const featurePick = await vscode.window.showQuickPick(
+      matrixFeatures.map((f) => ({
+        label: f.key,
+        description: `shape [${f.shape[0]}]${f.names ? ` · ${f.names.join(", ")}` : ""}`,
+        key: f.key,
+      })),
+      { placeHolder: "Select a feature to drop dimensions from" },
+    );
+    if (!featurePick) return;
+    const targetFeature = matrixFeatures.find((f) => f.key === featurePick.key)!;
+
+    const dimItems = (targetFeature.names ?? Array.from({ length: targetFeature.shape[0] }, (_, i) => `[${i}]`))
+      .map((name, i) => ({ label: name, index: i, picked: true }));
+
+    const qp = vscode.window.createQuickPick<vscode.QuickPickItem & { index: number }>();
+    qp.canSelectMany = true;
+    qp.title = `Drop dimensions from "${targetFeature.key}" (shape [${targetFeature.shape[0]}])`;
+    qp.placeholder = "Uncheck the dimensions you want to REMOVE";
+    qp.items = dimItems;
+    qp.selectedItems = dimItems;
+
+    const picked = await new Promise<readonly { index: number }[] | undefined>((resolve) => {
+      qp.onDidAccept(() => { resolve(qp.selectedItems); qp.hide(); });
+      qp.onDidHide(() => resolve(undefined));
+      qp.show();
+    });
+    if (!picked) return;
+    const keepIndices = picked.map((d) => d.index).sort((a, b) => a - b);
+    if (keepIndices.length === 0) {
+      void vscode.window.showInformationMessage("Must keep at least one dimension.");
+      return;
+    }
+    if (keepIndices.length === targetFeature.shape[0]) {
+      void vscode.window.showInformationMessage("No dimensions selected for removal.");
+      return;
+    }
+    const dropped = targetFeature.shape[0] - keepIndices.length;
+    const confirm = await vscode.window.showWarningMessage(
+      `Drop ${dropped} dimension${dropped > 1 ? "s" : ""} from "${targetFeature.key}"? ` +
+      `Shape will change from [${targetFeature.shape[0]}] to [${keepIndices.length}]. ` +
+      `This rewrites all episode parquet files.`,
+      { modal: true },
+      "Drop",
+    );
+    if (confirm !== "Drop") return;
+
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Dropping dimensions", cancellable: false },
+        async (progress) => {
+          let last = 0;
+          await dropDimensions(descriptor.root!, targetFeature.key, keepIndices, (p) => {
+            if (p.done - last >= 1 || p.done === p.total) {
+              last = p.done;
+              progress.report({ message: `${p.done}/${p.total} episodes` });
+            }
+          });
+        },
+      );
+      service.invalidate(datasetId);
+      tree.refresh();
+      void vscode.window.showInformationMessage(
+        `Dropped ${dropped} dimension${dropped > 1 ? "s" : ""} from "${targetFeature.key}".`,
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
     }
   });
 

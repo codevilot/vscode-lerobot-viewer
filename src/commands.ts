@@ -22,6 +22,8 @@ import { launchRerun } from "./rerun/rerunLauncher";
 import { mergeDatasets } from "./dataset/mergeDataset";
 import { convertV3ToV21 } from "./dataset/convertV3ToV21";
 import { dropDimensions } from "./dataset/dropDimensions";
+import { deleteFeature } from "./dataset/deleteFeature";
+import { recomputeStats } from "./dataset/computeStats";
 import type { SshTarget } from "./types";
 
 export const CommandIds = {
@@ -43,6 +45,8 @@ export const CommandIds = {
   mergeDatasets: "lerobotViewer.mergeDatasets",
   convertToV21: "lerobotViewer.convertToV21",
   dropDimensions: "lerobotViewer.dropDimensions",
+  deleteFeature: "lerobotViewer.deleteFeature",
+  recomputeStats: "lerobotViewer.recomputeStats",
 } as const;
 
 interface PreviewArgs {
@@ -517,6 +521,141 @@ export function registerCommands(
         `Dropped ${dropped} dimension${dropped > 1 ? "s" : ""} from "${targetFeature.key}".` +
         (isCopy ? ` New dataset at ${workRoot}.` : ""),
       );
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.deleteFeature, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) {
+      void vscode.window.showInformationMessage("Use the context menu on a dataset to delete a feature.");
+      return;
+    }
+    const descriptor = service.get(datasetId);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Feature deletion is only supported for local datasets.");
+      return;
+    }
+    let snapshot;
+    try { snapshot = await service.getSnapshot(datasetId); } catch (err) {
+      void vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
+      return;
+    }
+    if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1") {
+      void vscode.window.showInformationMessage("Feature deletion is only supported for v2.x datasets.");
+      return;
+    }
+
+    const allFeatures = Object.entries(snapshot.info.features).map(([key, feat]) => ({
+      label: key,
+      description: `${feat.dtype}${feat.shape ? ` shape [${feat.shape.join(",")}]` : ""}`,
+      key,
+    }));
+    const pick = await vscode.window.showQuickPick(allFeatures, {
+      placeHolder: "Select a feature to delete",
+    });
+    if (!pick) return;
+
+    const confirm = await vscode.window.showWarningMessage(
+      `Delete feature "${pick.key}"? This ${pick.label.startsWith("observation.images.") ? "removes video files" : "rewrites all parquet files"}.`,
+      { modal: true },
+      "Delete",
+    );
+    if (confirm !== "Delete") return;
+
+    // In-place or save-as.
+    const saveChoice = await vscode.window.showQuickPick(
+      [
+        { label: "$(edit) Modify in-place", description: "Delete directly from the source dataset" },
+        { label: "$(save-as) Save as new dataset", description: "Copy to a new folder first, then delete" },
+      ],
+      { placeHolder: "How would you like to apply the changes?" },
+    );
+    if (!saveChoice) return;
+
+    let workRoot = descriptor.root!;
+    let isCopy = false;
+    if (saveChoice.label.includes("Save as")) {
+      const targetUri = await vscode.window.showOpenDialog({
+        canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+        openLabel: "Select target folder",
+      });
+      if (!targetUri || targetUri.length === 0) return;
+      workRoot = targetUri[0].fsPath;
+      isCopy = true;
+    }
+
+    try {
+      if (isCopy) {
+        const { copyDataset } = await import("./dataset/datasetCopy");
+        await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: "Copying dataset", cancellable: false },
+          async (progress) => {
+            await copyDataset(descriptor.root!, workRoot, (msg) => progress.report({ message: msg }));
+          },
+        );
+      }
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Deleting feature "${pick.key}"`, cancellable: false },
+        async (progress) => {
+          let last = 0;
+          await deleteFeature(workRoot, pick.key, (p) => {
+            if (p.done - last >= 1 || p.done === p.total) {
+              last = p.done;
+              progress.report({ message: `${p.done}/${p.total} episodes` });
+            }
+          });
+        },
+      );
+      service.invalidate(datasetId);
+      tree.refresh();
+      if (isCopy) await service.addLocalFolder(vscode.Uri.file(workRoot));
+      void vscode.window.showInformationMessage(
+        `Deleted feature "${pick.key}".` + (isCopy ? ` New dataset at ${workRoot}.` : ""),
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.recomputeStats, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) {
+      void vscode.window.showInformationMessage("Use the context menu on a dataset to recompute stats.");
+      return;
+    }
+    const descriptor = service.get(datasetId);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Stats recomputation is only supported for local datasets.");
+      return;
+    }
+    let snapshot;
+    try { snapshot = await service.getSnapshot(datasetId); } catch (err) {
+      void vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
+      return;
+    }
+    if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1") {
+      void vscode.window.showInformationMessage("Stats recomputation is only supported for v2.x datasets.");
+      return;
+    }
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Computing stats", cancellable: false },
+        async (progress) => {
+          let last = 0;
+          await recomputeStats(descriptor.root!, (p) => {
+            if (p.done - last >= 1 || p.done === p.total) {
+              last = p.done;
+              progress.report({ message: `${p.done}/${p.total} episodes` });
+            }
+          });
+        },
+      );
+      service.invalidate(datasetId);
+      void vscode.window.showInformationMessage("Stats recomputed.");
     } catch (err) {
       void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
     }

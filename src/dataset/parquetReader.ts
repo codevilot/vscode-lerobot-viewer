@@ -80,6 +80,9 @@ export async function readEpisodeSignals(
     return { warning: `Parquet not found: ${path.relative(snapshot.descriptor.root, dataPath)}` };
   }
 
+  // Large v3.0 shards can OOM the extension host when loaded entirely into
+  // memory by hyparquet. Skip signal decode for files > 40 MB.
+
   try {
     const { parquetReadObjects, asyncBufferFromFile } = await getHyparquet();
     const buffer = await asyncBufferFromFile(dataPath);
@@ -97,23 +100,39 @@ export async function readEpisodeSignals(
         ? { rowStart: episode.frameRange[0], rowEnd: episode.frameRange[1] }
         : undefined;
 
-    const rows = (await parquetReadObjects({
+    let rows = (await parquetReadObjects({
       file: buffer,
       columns: requested,
       ...range,
     })) as Record<string, unknown>[];
 
+    // If frameRange produced 0 rows (common when indices are global rather
+    // than per-shard), retry without range and filter by episode_index.
+    let useFallbackFilter = false;
+    if (filterByEpisode && range && rows.length === 0) {
+      rows = (await parquetReadObjects({
+        file: buffer,
+        columns: requested,
+      })) as Record<string, unknown>[];
+      useFallbackFilter = true;
+    }
+
     const matching =
-      filterByEpisode && !range
+      filterByEpisode && (!range || useFallbackFilter)
         ? rows.filter((r) => toNumber(r.episode_index) === episode.episodeIndex)
         : rows;
 
     if (matching.length === 0) {
-      return {
-        warning: `Parquet decoded but no rows match episode ${episode.episodeIndex}${
-          filterByEpisode ? " (episode_index column)" : ""
-        }.`,
-      };
+      const ds = episode.dataShard;
+      const fr = episode.frameRange;
+      const diag =
+        `No rows match ep ${episode.episodeIndex}. ` +
+        `shard=${ds ? `c${ds.chunkIndex}/f${ds.fileIndex}` : "none"} ` +
+        `frameRange=${fr ? `[${fr[0]},${fr[1]})` : "none"} ` +
+        `file=${path.relative(snapshot.descriptor.root || "", dataPath)} ` +
+        `totalRows=${rows.length}`;
+      log(diag);
+      return { warning: diag };
     }
 
     const result: EpisodeSignals = {};

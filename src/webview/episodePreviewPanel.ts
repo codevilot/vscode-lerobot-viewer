@@ -8,6 +8,7 @@ import type { DatasetService } from "../dataset/datasetService";
 import { readEpisodeSignals } from "../dataset/parquetReader";
 import { log, logError } from "../log";
 import { launchRerun } from "../rerun/rerunLauncher";
+import { serveVideo, stopServeVideo } from "./videoServer";
 import type { LeRobotEpisode } from "../types";
 import { BaseWebviewPanel } from "./baseWebviewPanel";
 import type { FromWebviewMessage } from "./protocol";
@@ -80,7 +81,7 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
   private readonly datasetId: string;
 
   protected override extraCspDirectives(): Array<[string, string]> {
-    return [["media-src", `${this.panel.webview.cspSource} https: blob:`]];
+    return [["media-src", `${this.panel.webview.cspSource} https: blob: http://127.0.0.1:*`]];
   }
 
   protected async onMessage(message: FromWebviewMessage): Promise<void> {
@@ -114,15 +115,21 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
   }
 
   private async buildMeta(snapshot: Awaited<ReturnType<DatasetService["getSnapshot"]>>) {
-    // Download/resolve video URIs in parallel so a multi-camera SSH
-    // dataset doesn't pay for sequential downloads.
     const cameras = await Promise.all(
       snapshot.cameraKeys.map(async (key) => {
         const resolved = await resolveVideoUri(snapshot, this.episode, key);
         if (!resolved) return { key };
+        // Large videos → stream via our own HTTP server (supports Range).
+        // Small videos → VS Code webview local server (simpler, no Range needed).
+        let sz = 0;
+        try { sz = (await import("node:fs/promises").then((m) => m.stat(resolved.uri.fsPath))).size; } catch { /* ok */ }
+        const useStreaming = sz > 50 * 1024 * 1024;
+        const videoUri = useStreaming
+          ? await serveVideo(resolved.uri.fsPath)
+          : this.panel.webview.asWebviewUri(resolved.uri).toString();
         return {
           key,
-          videoUri: this.panel.webview.asWebviewUri(resolved.uri).toString(),
+          videoUri,
           shardFrameRange: resolved.location.shardFrameRange,
           note: resolved.location.note,
         };

@@ -115,8 +115,15 @@ export async function convertV3ToV21(
       if (rows) shardCache.set(shardKey, rows);
     }
 
-    if (rows && ep.frameRange) {
-      const epRows = rows.slice(ep.frameRange[0], ep.frameRange[1]);
+    if (rows) {
+      // frameRange may be global, not per-file. Try slice first,
+      // fall back to episode_index filter if OOB.
+      let epRows = ep.frameRange
+        ? rows.slice(ep.frameRange[0], ep.frameRange[1])
+        : rows.filter((r) => Number(r.episode_index) === ep.episodeIndex);
+      if (epRows.length === 0) {
+        epRows = rows.filter((r) => Number(r.episode_index) === ep.episodeIndex);
+      }
       if (epRows.length > 0) {
         totalFrames += epRows.length;
         const cleanRows = sanitizeRows(epRows);

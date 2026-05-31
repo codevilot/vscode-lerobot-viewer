@@ -42,3 +42,4 @@ tailwind.config.js
 **/*.ts
 **/*.tsx
 examples/**
+.claude/

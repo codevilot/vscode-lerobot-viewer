@@ -70,17 +70,13 @@ export async function recomputeStats(
     }
   }
 
-  await writeJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
-  const globalStats = globalAcc.toPerEpisode(resolveKey);
-  // Merge video stats into global.
+  // Merge video stats into per-episode records.
   if ((globalAcc as any)._videoStats) {
-    Object.assign(globalStats, (globalAcc as any)._videoStats);
+    for (const rec of epStatsRecords) {
+      Object.assign(rec, (globalAcc as any)._videoStats);
+    }
   }
-  await fs.writeFile(
-    path.join(root, "meta", "stats.json"),
-    JSON.stringify(globalStats, null, 2),
-    "utf8",
-  );
+  await writeJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
 }
 
 // ---- stats accumulator (Welford online algorithm) ----

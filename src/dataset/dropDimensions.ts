@@ -4,7 +4,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { V21Adapter } from "./adapters/V21Adapter";
-import { exists, readJson } from "./adapters/util";
+import { exists, readJson, readJsonlIfExists, writeJsonl } from "./adapters/util";
 
 // Lazy imports — hyparquet (ESM), parquetjs (CJS).
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
@@ -115,12 +115,21 @@ export async function dropDimensions(
     "utf8",
   );
 
-  // 4. Write regenerated per-episode stats.
+  // 4. Write regenerated per-episode stats, preserving video stats from old file.
   if (epStatsRecords.length > 0) {
-    const { writeJsonl } = await import("./adapters/util");
+    const oldStats = await readJsonlIfExists(path.join(root, "meta", "episodes_stats.jsonl"));
+    if (oldStats) {
+      for (let i = 0; i < epStatsRecords.length && i < oldStats.length; i++) {
+        const oldRec = oldStats[i];
+        const newRec = epStatsRecords[i];
+        for (const k of Object.keys(oldRec)) {
+          if (k === "episode_index") continue;
+          if (k in newRec) continue;
+          newRec[k] = oldRec[k];
+        }
+      }
+    }
     await writeJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
-    // Remove global stats (invalidated by dimension change).
-    try { await fs.unlink(path.join(root, "meta", "stats.json")); } catch { /* ok */ }
   }
 }
 

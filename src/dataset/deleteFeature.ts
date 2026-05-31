@@ -110,14 +110,6 @@ async function findVideoFiles(
 }
 
 async function removeFromStats(root: string, featureKey: string): Promise<void> {
-  const statsPath = path.join(root, "meta", "stats.json");
-  if (await exists(statsPath)) {
-    try {
-      const raw = await readJson(statsPath);
-      delete (raw as Record<string, unknown>)[featureKey];
-      await fs.writeFile(statsPath, JSON.stringify(raw, null, 2), "utf8");
-    } catch { /* ok */ }
-  }
   const epStatsPath = path.join(root, "meta", "episodes_stats.jsonl");
   if (await exists(epStatsPath)) {
     try {

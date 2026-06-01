@@ -1,7 +1,10 @@
-// Write stats records as JSONL with all numeric arrays forced to float.
-// JavaScript JSON doesn't distinguish 0 from 0.0, but Python json.load
-// deserializes 0 as int and 0.0 as float — causing Arrow concat failures
-// when different episodes' stats have mixed int/float types for the same field.
+// Stats JSON serializer. JavaScript JSON drops the decimal from "1.0" → "1",
+// causing Python json.load to infer int64 instead of float64, which Arrow
+// refuses to concat with genuine float arrays from other episodes.
+//
+// Fix: post-process the JSON string — append ".0" to every numeric literal
+// that appears inside a JSON array (i.e. between [ and ] or after , inside
+// an array). This forces Python to parse all array elements as floats.
 
 import * as fs from "node:fs/promises";
 
@@ -10,18 +13,19 @@ export async function writeStatsJsonl(
   records: Record<string, unknown>[],
 ): Promise<void> {
   const lines = records
-    .map((rec) => JSON.stringify(rec, floatReplacer))
+    .map((rec) => JSON.stringify(rec))
+    .map(floatifyArraysInJson)
     .join("\n") + "\n";
   await fs.writeFile(filePath, lines, "utf8");
 }
 
-function floatReplacer(_key: string, value: unknown): unknown {
-  // Convert integer numbers in arrays to non-integer floats by adding
-  // a tiny epsilon. Arrays in stats contain only numeric values.
-  if (Array.isArray(value)) {
-    return value.map((v) =>
-      typeof v === "number" && Number.isInteger(v) ? v + 1e-12 : v,
-    );
-  }
-  return value;
+function floatifyArraysInJson(json: string): string {
+  // Match numeric literals that are array elements:
+  // - preceded by [ or , (with optional whitespace)
+  // - followed by , or ] (with optional whitespace)
+  // Must not already contain a dot, 'e', or 'E'.
+  return json.replace(
+    /(?<=[\[,]\s*)(-?\d+)(?=\s*[,\]])/g,
+    (_, digits) => digits + ".0",
+  );
 }

@@ -3,6 +3,14 @@
 // INT32 vs INT64). Without this, parquetjs writes all numbers as DOUBLE/INT64,
 // causing type mismatches when concatenating with original parquet files.
 
+const INTERNAL_TYPES: Record<string, string> = {
+  episode_index: "DOUBLE",
+  frame_index: "DOUBLE",
+  timestamp: "DOUBLE",
+  index: "DOUBLE",
+  task_index: "DOUBLE",
+};
+
 export function buildParquetSchema(
   row: Record<string, unknown>,
   features?: Record<string, { dtype: string }>,
@@ -11,11 +19,12 @@ export function buildParquetSchema(
   for (const [key, value] of Object.entries(row)) {
     if (value === null || value === undefined) continue;
     const feat = features?.[key];
+    const knownType = INTERNAL_TYPES[key];
     if (Array.isArray(value)) {
-      const elemType = feat ? dtypeToParquet(feat.dtype) : "DOUBLE";
+      const elemType = knownType ?? (feat ? dtypeToParquet(feat.dtype) : "DOUBLE");
       fields[key] = { type: elemType, repeated: true };
     } else if (typeof value === "number") {
-      fields[key] = { type: feat ? dtypeToParquet(feat.dtype) : "DOUBLE" };
+      fields[key] = { type: knownType ?? (feat ? dtypeToParquet(feat.dtype) : "DOUBLE") };
     } else if (typeof value === "boolean") {
       fields[key] = { type: "BOOLEAN" };
     } else {

@@ -93,6 +93,10 @@ export async function convertV3ToV21(
   const total = episodes.length;
   let totalFrames = 0;
 
+  // Pre-built canonical schema (populated from first episode's data).
+  // Using the same schema for all episodes prevents Arrow type conflicts.
+  let canonicalSchema: unknown = null;
+
   // Cache: data shard path → loaded rows (to avoid re-reading the same shard).
   const shardCache = new Map<string, Record<string, unknown>[]>();
 
@@ -145,7 +149,10 @@ export async function convertV3ToV21(
         });
         const dstPath = path.join(targetRoot, dstRel);
         await fs.mkdir(path.dirname(dstPath), { recursive: true });
-        await writeParquetFile(dstPath, epRows, info);
+        if (!canonicalSchema) {
+          canonicalSchema = buildCanonicalSchema(info, sanitizeRow(epRows[0]));
+        }
+        await writeParquetFile(dstPath, epRows, canonicalSchema);
       }
     }
 
@@ -270,48 +277,57 @@ async function readDataShardRows(
 async function writeParquetFile(
   filePath: string,
   rows: Record<string, unknown>[],
-  info: LeRobotInfo,
+  pjsSchema: unknown,
 ): Promise<void> {
   if (rows.length === 0) return;
   const pjs = getParquetjs();
-
-  // Build the schema from the actual row data (first row) — this covers
-  // internal columns (episode_index, frame_index, timestamp, index) that
-  // aren't listed in info.features.
-  const schemaFields: Record<string, unknown> = {};
-  const firstRow = sanitizeRow(rows[0]);
-  for (const [key, value] of Object.entries(firstRow)) {
-    const feat = info.features[key];
-    if (feat && feat.dtype === "video") continue; // videos are separate files
-    if (value === null || value === undefined) continue;
-
-    if (Array.isArray(value)) {
-      const elemType = inferElemType(feat);
-      schemaFields[key] = { type: elemType, repeated: true };
-    } else if (typeof value === "number") {
-      const t = feat
-        ? dtypeToParquetType(feat.dtype)
-        : Number.isInteger(value) ? "INT64" : "DOUBLE";
-      schemaFields[key] = { type: t };
-    } else if (typeof value === "string") {
-      schemaFields[key] = { type: "UTF8" };
-    } else if (typeof value === "boolean") {
-      schemaFields[key] = { type: "BOOLEAN" };
-    } else {
-      // Fallback: treat as string.
-      schemaFields[key] = { type: "UTF8" };
-    }
-  }
-
-  const schema = new pjs.ParquetSchema(schemaFields);
-  const writer = await pjs.ParquetWriter.openFile(schema, filePath, {
-    // Disable compression to avoid snappy/brotli Buffer issues.
+  const writer = await pjs.ParquetWriter.openFile(pjsSchema, filePath, {
     compression: "UNCOMPRESSED",
   });
   for (const row of rows) {
     await writer.appendRow(sanitizeRow(row));
   }
   await writer.close();
+}
+
+function buildCanonicalSchema(info: LeRobotInfo, sampleRow: Record<string, unknown>): unknown {
+  const pjs = getParquetjs();
+  const fields: Record<string, unknown> = {};
+
+  // Fixed-type internal columns.
+  const INTERNAL: Record<string, string> = {
+    episode_index: "DOUBLE", frame_index: "DOUBLE", timestamp: "DOUBLE",
+    index: "DOUBLE", task_index: "DOUBLE",
+  };
+
+  // Feature columns from info.json (derive type and repeated from features).
+  for (const [key, feat] of Object.entries(info.features)) {
+    if (feat.dtype === "video") continue;
+    const pt = dtypeToParquetType(feat.dtype);
+    const isArray = feat.shape && feat.shape.length >= 1 && feat.shape[0] >= 1;
+    fields[key] = { type: pt, repeated: isArray };
+  }
+
+  // Also include any extra columns from the actual data (e.g. from older converters).
+  for (const key of Object.keys(sampleRow)) {
+    if (fields[key] || INTERNAL[key]) continue;
+    const v = sampleRow[key];
+    if (v === null || v === undefined) continue;
+    if (Array.isArray(v)) {
+      fields[key] = { type: "DOUBLE", repeated: true };
+    } else if (typeof v === "number") {
+      fields[key] = { type: "DOUBLE" };
+    } else if (typeof v === "boolean") {
+      fields[key] = { type: "BOOLEAN" };
+    }
+  }
+
+  // Internal columns always present.
+  for (const [k, t] of Object.entries(INTERNAL)) {
+    fields[k] = { type: t };
+  }
+
+  return new pjs.ParquetSchema(fields);
 }
 
 /** Convert bigint values to number — parquetjs rejects bigint. */
@@ -370,12 +386,15 @@ async function sliceVideo(
   fromTs: number,
   toTs: number,
 ): Promise<void> {
-  // -ss before -i for fast seeking; -to for end time; -c copy avoids re-encode.
+  // -ss after -i (output seeking) ensures timestamps start at 0.
+  // -c copy avoids re-encode but requires keyframe alignment.
+  // -avoid_negative_ts make_zero prevents negative timestamps in output.
   await execFile("ffmpeg", [
-    "-ss", fromTs.toFixed(3),
     "-i", srcPath,
-    "-to", (toTs - fromTs).toFixed(3),
+    "-ss", fromTs.toFixed(3),
+    "-to", toTs.toFixed(3),
     "-c", "copy",
+    "-avoid_negative_ts", "make_zero",
     "-y",
     dstPath,
   ]);

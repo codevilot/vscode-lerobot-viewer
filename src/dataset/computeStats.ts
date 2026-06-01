@@ -146,6 +146,9 @@ class StatsAccumulator {
       const count = this.counts.get(pk)!;
       const vals = this.values.get(pk)!;
       const q01 = vals.map((v) => quantile(v, 0.01));
+      const q10 = vals.map((v) => quantile(v, 0.10));
+      const q50 = vals.map((v) => quantile(v, 0.50));
+      const q90 = vals.map((v) => quantile(v, 0.90));
       const q99 = vals.map((v) => quantile(v, 0.99));
       out[resolveKey(pk)] = {
         min: this.mins.get(pk),
@@ -153,6 +156,9 @@ class StatsAccumulator {
         mean: this.means.get(pk)!,
         std: this.m2s.get(pk)!.map((m2) => Math.sqrt(m2 / count)),
         q01,
+        q10,
+        q50,
+        q90,
         q99,
         count: [count],
       };

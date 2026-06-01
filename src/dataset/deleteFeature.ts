@@ -3,7 +3,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { V21Adapter } from "./adapters/V21Adapter";
-import { buildVideoPath, exists, readJson, writeJsonl } from "./adapters/util";
+import { buildVideoPath, exists, readJson } from "./adapters/util";
+import { buildParquetSchema } from "./parquetSchema";
+import { writeStatsJsonl } from "./statsJson";
 
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
 function getHyparquet() {
@@ -72,7 +74,7 @@ export async function deleteFeature(
 
       const pjs = getParquetjs();
       const cleanRows = rows.map(sanitizeRow).map((r) => { delete r[featureKey]; return r; });
-      const schemaFields = buildSchema(cleanRows[0]);
+      const schemaFields = buildParquetSchema(cleanRows[0], infoRaw.features as Record<string, { dtype: string }>);
       const schema = new pjs.ParquetSchema(schemaFields);
 
       const tmpPath = dataPath + ".tmp";
@@ -116,8 +118,7 @@ async function removeFromStats(root: string, featureKey: string): Promise<void> 
       const text = await fs.readFile(epStatsPath, "utf8");
       const lines = text.trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
       for (const line of lines) delete line[featureKey];
-      const { writeJsonl } = await import("./adapters/util");
-      await writeJsonl(epStatsPath, lines);
+      await writeStatsJsonl(epStatsPath, lines);
     } catch { /* ok */ }
   }
 }
@@ -132,21 +133,3 @@ function sanitizeRow(row: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-function buildSchema(row: Record<string, unknown>): Record<string, unknown> {
-  const fields: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(row)) {
-    if (value === null || value === undefined) continue;
-    if (Array.isArray(value)) {
-      const s = value[0];
-      const t = typeof s === "number" ? (Number.isInteger(s) ? "INT64" : "DOUBLE") : "UTF8";
-      fields[key] = { type: t, repeated: true };
-    } else if (typeof value === "number") {
-      fields[key] = { type: Number.isInteger(value) ? "INT64" : "DOUBLE" };
-    } else if (typeof value === "boolean") {
-      fields[key] = { type: "BOOLEAN" };
-    } else {
-      fields[key] = { type: "UTF8" };
-    }
-  }
-  return fields;
-}

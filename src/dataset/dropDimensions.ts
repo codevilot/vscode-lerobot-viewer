@@ -4,7 +4,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { V21Adapter } from "./adapters/V21Adapter";
-import { exists, readJson, readJsonlIfExists, writeJsonl } from "./adapters/util";
+import { exists, readJson, readJsonlIfExists } from "./adapters/util";
+import { buildParquetSchema } from "./parquetSchema";
+import { writeStatsJsonl } from "./statsJson";
 
 // Lazy imports — hyparquet (ESM), parquetjs (CJS).
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
@@ -76,7 +78,7 @@ export async function dropDimensions(
 
     const pjs = getParquetjs();
     const firstRow = sanitizeRow(rows[0]);
-    const schemaFields = buildSchema(firstRow);
+    const schemaFields = buildParquetSchema(firstRow, infoRaw.features as Record<string, { dtype: string }>);
     const schema = new pjs.ParquetSchema(schemaFields);
 
     const tmpPath = dataPath + ".tmp";
@@ -132,7 +134,7 @@ export async function dropDimensions(
         }
       }
     }
-    await writeJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
+    await writeStatsJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
   }
 }
 
@@ -156,7 +158,6 @@ function sanitizeRow(row: Record<string, unknown>): Record<string, unknown> {
 function computeEpStats(rows: Record<string, unknown>[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (rows.length === 0) return out;
-  // Gather column keys from the first row.
   const keys = Object.keys(rows[0]).filter((k) => {
     const v = rows[0][k];
     if (v === null || v === undefined) return false;
@@ -190,28 +191,10 @@ function computeEpStats(rows: Record<string, unknown>[]): Record<string, unknown
       max: maxs,
       mean: means,
       std: m2s.map((m2) => Math.sqrt(m2 / count)),
+      count: [count],
     };
   }
   return out;
 }
 
-function buildSchema(row: Record<string, unknown>): Record<string, unknown> {
-  const fields: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(row)) {
-    if (value === null || value === undefined) continue;
-    if (Array.isArray(value)) {
-      const sample = value[0];
-      const t = typeof sample === "number"
-        ? (Number.isInteger(sample) ? "INT64" : "DOUBLE")
-        : "UTF8";
-      fields[key] = { type: t, repeated: true };
-    } else if (typeof value === "number") {
-      fields[key] = { type: Number.isInteger(value) ? "INT64" : "DOUBLE" };
-    } else if (typeof value === "boolean") {
-      fields[key] = { type: "BOOLEAN" };
-    } else {
-      fields[key] = { type: "UTF8" };
-    }
-  }
-  return fields;
-}
+

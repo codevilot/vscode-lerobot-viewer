@@ -19,6 +19,7 @@ import {
   exists,
   writeJsonl,
 } from "./adapters/util";
+import { writeStatsJsonl } from "./statsJson";
 
 // Lazy ESM/CJS imports.
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
@@ -210,7 +211,7 @@ export async function convertV3ToV21(
   await writeJsonl(path.join(targetRoot, "meta", "tasks.jsonl"), taskRecords);
 
   // Write per-episode stats (v2.1 canonical format).
-  await writeJsonl(
+  await writeStatsJsonl(
     path.join(targetRoot, "meta", "episodes_stats.jsonl"),
     epStatsRecords,
   );
@@ -496,6 +497,7 @@ class StatsAccumulator {
         max: this.maxs.get(pk),
         mean: [...mean],
         std,
+        count: [count],
       };
     }
     return out;

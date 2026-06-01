@@ -15,6 +15,7 @@ import {
   readJsonlIfExists,
   writeJsonl,
 } from "./adapters/util";
+import { writeStatsJsonl } from "./statsJson";
 
 // ---- public API ----
 
@@ -49,8 +50,9 @@ export async function mergeDatasets(
     throw new Error("At least 2 datasets are required to merge.");
   }
 
-  // ---- validate compatibility ----
+  // ---- validate compatibility (fps, shapes, AND parquet schema types) ----
   validateCompatibility(snapshots);
+  await validateParquetSchemas(snapshots);
 
   const chunksSize = snapshots[0].info.chunksSize ?? 1000;
   const fps = snapshots[0].info.fps;
@@ -168,13 +170,69 @@ export async function mergeDatasets(
     }
   }
   if (allEpStats.length > 0) {
-    await writeJsonl(path.join(targetRoot, "meta", "episodes_stats.jsonl"), allEpStats);
+    const dropped = normalizeStatsFields(allEpStats);
+    // Log diagnostics.
+    const sampleRec = allEpStats[0];
+    const sampleKeys = sampleRec ? Object.keys((sampleRec as any).stats ?? {}).slice(0, 3) : [];
+    onProgress({ done: total, total, current: `Stats merged: ${allEpStats.length} eps, ${sampleKeys.length} features${dropped.length ? `, dropped ${dropped.join(",")}` : ""}` });
+    if (dropped.length > 0) {
+      onProgress({ done: total, total, current: `Warn: dropped inconsistent stat fields: ${dropped.join(", ")}` });
+    }
+    await writeStatsJsonl(path.join(targetRoot, "meta", "episodes_stats.jsonl"), allEpStats);
   }
 
   return { totalEpisodes: total, totalFrames, totalTasks: mergedTasks.length };
 }
 
 // ---- validation ----
+
+async function validateParquetSchemas(snapshots: DatasetSnapshot[]): Promise<void> {
+  // Sample the first episode's parquet from each source and compare column types.
+  const { parquetReadObjects, asyncBufferFromFile } = await import("hyparquet");
+  const sources: Array<{ name: string; types: Record<string, string> }> = [];
+  for (const snap of snapshots) {
+    const root = snap.descriptor.root!;
+    const firstEp = snap.episodes[0];
+    const dataRel = buildDataPath({
+      template: snap.info.dataPath ?? "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+      chunkIndex: Math.floor(firstEp.episodeIndex / (snap.info.chunksSize ?? 1000)),
+      fileIndex: 0,
+      episodeIndex: firstEp.episodeIndex,
+    });
+    const dataPath = path.join(root, dataRel);
+    if (!(await exists(dataPath))) continue;
+    try {
+      const buffer = await asyncBufferFromFile(dataPath);
+      const rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
+      if (rows.length === 0) continue;
+      const row = rows[0];
+      const types: Record<string, string> = {};
+      for (const [k, v] of Object.entries(row)) {
+        if (v === null || v === undefined) continue;
+        types[k] = Array.isArray(v)
+          ? `list<${typeof (v as unknown[])[0]}>`
+          : typeof v === "bigint" ? "int64" : typeof v;
+      }
+      sources.push({ name: snap.descriptor.name, types });
+    } catch { /* skip */ }
+  }
+  if (sources.length < 2) return;
+  // Compare each source against the first.
+  const base = sources[0];
+  for (let i = 1; i < sources.length; i++) {
+    const s = sources[i];
+    for (const [col, baseType] of Object.entries(base.types)) {
+      const sType = s.types[col];
+      if (sType && sType !== baseType) {
+        throw new Error(
+          `Parquet type mismatch for column "${col}": ` +
+          `"${base.name}" has ${baseType}, "${s.name}" has ${sType}. ` +
+          `Use "Drop Dimensions" or "Delete Feature" on the inconsistent dataset to normalize types before merging.`,
+        );
+      }
+    }
+  }
+}
 
 function validateCompatibility(snapshots: DatasetSnapshot[]): void {
   const base = snapshots[0];
@@ -236,6 +294,76 @@ function reindexEpisodes(snapshots: DatasetSnapshot[]): MergeEpisode[] {
     }
   }
   return out;
+}
+
+/**
+ * Remove stat fields (like q01/q99) that aren't present in ALL records.
+ * Returns the list of dropped field names (feature.field).
+ */
+function normalizeStatsFields(records: Record<string, unknown>[]): string[] {
+  const dropped: string[] = [];
+  // For each feature, find fields that exist in some but not all records.
+  const featureFields = new Map<string, Map<string, number>>();
+  for (const rec of records) {
+    const stats = (rec.stats ?? rec) as Record<string, Record<string, unknown>>;
+    for (const [fk, fv] of Object.entries(stats)) {
+      if (!fv || typeof fv !== "object") continue;
+      if (!featureFields.has(fk)) featureFields.set(fk, new Map());
+      const fieldCount = featureFields.get(fk)!;
+      for (const k of Object.keys(fv)) {
+        fieldCount.set(k, (fieldCount.get(k) ?? 0) + 1);
+      }
+    }
+  }
+  const totalRecords = records.length;
+  for (const [fk, fieldCount] of featureFields) {
+    for (const [field, count] of fieldCount) {
+      if (count < totalRecords) {
+        dropped.push(`${fk}.${field}`);
+      }
+    }
+  }
+  // Remove inconsistent fields per-feature from all records.
+  if (dropped.length > 0) {
+    // Group by feature: featureKey → Set of field names to drop.
+    const byFeature = new Map<string, Set<string>>();
+    for (const d of dropped) {
+      const parts = d.split(".");
+      const fk = parts[0];
+      const field = parts.slice(1).join(".");
+      if (!byFeature.has(fk)) byFeature.set(fk, new Set());
+      byFeature.get(fk)!.add(field);
+    }
+    for (const rec of records) {
+      const stats = (rec.stats ?? rec) as Record<string, Record<string, unknown>>;
+      for (const [fk, fields] of byFeature) {
+        const feat = stats[fk] as Record<string, unknown> | undefined;
+        if (!feat) continue;
+        for (const f of fields) delete feat[f];
+      }
+    }
+  }
+  // Also normalize types: ensure count is int64, numeric arrays are consistent.
+  for (const rec of records) {
+    const stats = (rec.stats ?? rec) as Record<string, Record<string, unknown>>;
+    for (const feat of Object.values(stats)) {
+      if (!feat || typeof feat !== "object") continue;
+      const f = feat as Record<string, unknown>;
+      // count should always be an integer array.
+      if ("count" in f && f.count !== null) {
+        const arr = Array.isArray(f.count) ? f.count : [f.count];
+        f.count = arr.map((v: number) => Math.round(v));
+      }
+      // Ensure all numeric arrays are plain numbers (no BigInt, no mixed types).
+      for (const k of ["min", "max", "mean", "std", "q01", "q10", "q50", "q90", "q99"]) {
+        if (k in f && f[k] !== null && Array.isArray(f[k])) {
+          f[k] = (f[k] as number[]).map((v) => Number(v));
+        }
+      }
+    }
+  }
+
+  return dropped;
 }
 
 // ---- task merging ----

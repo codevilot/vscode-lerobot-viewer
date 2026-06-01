@@ -4,8 +4,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { V21Adapter } from "./adapters/V21Adapter";
-import { exists, writeJsonl, readJson } from "./adapters/util";
+import { exists, readJson } from "./adapters/util";
 import { computeVideoFeatureStats } from "./videoStats";
+import { writeStatsJsonl } from "./statsJson";
 import type { LeRobotInfo } from "../types";
 
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
@@ -77,7 +78,7 @@ export async function recomputeStats(
       if (s) Object.assign(s, (globalAcc as any)._videoStats);
     }
   }
-  await writeJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
+  await writeStatsJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
 }
 
 // ---- stats accumulator (Welford online algorithm) ----
@@ -153,6 +154,7 @@ class StatsAccumulator {
         std: this.m2s.get(pk)!.map((m2) => Math.sqrt(m2 / count)),
         q01,
         q99,
+        count: [count],
       };
     }
     return out;

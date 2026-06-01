@@ -24,6 +24,7 @@ import { convertV3ToV21 } from "./dataset/convertV3ToV21";
 import { dropDimensions } from "./dataset/dropDimensions";
 import { deleteFeature } from "./dataset/deleteFeature";
 import { recomputeStats } from "./dataset/computeStats";
+import { renameFeature } from "./dataset/renameFeature";
 import type { SshTarget } from "./types";
 
 export const CommandIds = {
@@ -47,6 +48,7 @@ export const CommandIds = {
   dropDimensions: "lerobotViewer.dropDimensions",
   deleteFeature: "lerobotViewer.deleteFeature",
   recomputeStats: "lerobotViewer.recomputeStats",
+  renameFeature: "lerobotViewer.renameFeature",
 } as const;
 
 interface PreviewArgs {
@@ -656,6 +658,66 @@ export function registerCommands(
       );
       service.invalidate(datasetId);
       void vscode.window.showInformationMessage("Stats recomputed.");
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.renameFeature, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) {
+      void vscode.window.showInformationMessage("Use the context menu on a dataset to rename a feature.");
+      return;
+    }
+    const descriptor = service.get(datasetId);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Feature rename is only supported for local datasets.");
+      return;
+    }
+    let snapshot;
+    try { snapshot = await service.getSnapshot(datasetId); } catch (err) {
+      void vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
+      return;
+    }
+    if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1") {
+      void vscode.window.showInformationMessage("Feature rename is only supported for v2.x datasets.");
+      return;
+    }
+
+    const allFeatures = Object.entries(snapshot.info.features).map(([key, feat]) => ({
+      label: key, description: `${feat.dtype}${feat.shape ? ` [${feat.shape.join(",")}]` : ""}`, key,
+    }));
+    const pick = await vscode.window.showQuickPick(allFeatures, { placeHolder: "Select a feature to rename" });
+    if (!pick) return;
+
+    const newName = await vscode.window.showInputBox({
+      prompt: `Rename "${pick.key}"`,
+      value: pick.key,
+      validateInput: (v) => {
+        if (!v.trim()) return "Name cannot be empty.";
+        if (v.trim() === pick.key) return "Name is unchanged.";
+        return undefined;
+      },
+    });
+    if (!newName) return;
+
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Renaming "${pick.key}" → "${newName}"`, cancellable: false },
+        async (progress) => {
+          let last = 0;
+          await renameFeature(descriptor.root!, pick.key, newName.trim(), (p) => {
+            if (p.done - last >= 1 || p.done === p.total) {
+              last = p.done;
+              progress.report({ message: `${p.done}/${p.total}` });
+            }
+          });
+        },
+      );
+      service.invalidate(datasetId);
+      tree.refresh();
+      void vscode.window.showInformationMessage(`Renamed "${pick.key}" → "${newName.trim()}".`);
     } catch (err) {
       void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
     }

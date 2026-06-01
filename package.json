@@ -197,6 +197,11 @@
           "group": "1_modify@0"
         },
         {
+          "command": "lerobotViewer.deleteEpisode",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotEpisode",
+          "group": "1_modify@1"
+        },
+        {
           "command": "lerobotViewer.previewEpisode",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotEpisode",
           "group": "inline@1"

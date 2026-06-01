@@ -661,36 +661,46 @@ export function registerCommands(
     }
   });
 
-  reg(CommandIds.deleteEpisode, async (...args: unknown[]) => {
-    const arg = args[0];
-    let datasetId: string | undefined;
-    let episodeIndex: number | undefined;
-    if (isEpisodeNode(arg)) {
-      datasetId = arg.datasetId;
-      episodeIndex = arg.episode.episodeIndex;
+  reg(CommandIds.deleteEpisode, async () => {
+    // Support multi-select from tree (same pattern as editEpisodeTasks).
+    const nodes = extractEpisodeNodesFromSelection(treeView.selection);
+    if (nodes.length === 0) {
+      void vscode.window.showInformationMessage("Select one or more episodes to delete.");
+      return;
     }
-    if (!datasetId || episodeIndex === undefined) {
-      const payload = await pickEpisode(service);
-      if (!payload) return;
-      datasetId = payload.datasetId;
-      episodeIndex = payload.episodeIndex;
-    }
+    const datasetId = nodes[0].datasetId;
+    // Delete from highest index first to avoid reindex shifts.
+    const indices = nodes.map((n) => n.episode.episodeIndex).sort((a, b) => b - a);
 
+    const label = indices.length === 1
+      ? `Delete episode ${indices[0]}?`
+      : `Delete ${indices.length} episodes?`;
     const choice = await vscode.window.showWarningMessage(
-      `Delete episode ${episodeIndex}? This permanently removes the episode files from disk.`,
+      `${label} This permanently removes the episode files from disk.`,
       { modal: true },
-      "Delete episode",
+      "Delete",
     );
-    if (choice !== "Delete episode") return;
+    if (choice !== "Delete") return;
 
-    try {
-      await service.deleteEpisode(datasetId, episodeIndex);
-      void vscode.window.showInformationMessage(`Deleted episode ${episodeIndex}.`);
-      tree.refresh();
-    } catch (err) {
-      logError(`deleting episode ${episodeIndex} from ${datasetId}`, err);
+    let deleted = 0;
+    let lastErr = "";
+    for (const idx of indices) {
+      try {
+        await service.deleteEpisode(datasetId, idx);
+        deleted++;
+      } catch (err) {
+        lastErr = (err as Error).message;
+        logError(`deleting episode ${idx} from ${datasetId}`, err);
+      }
+    }
+    tree.refresh();
+    if (deleted === indices.length) {
+      void vscode.window.showInformationMessage(
+        `Deleted ${deleted} episode${deleted > 1 ? "s" : ""}.`,
+      );
+    } else {
       void vscode.window.showErrorMessage(
-        `Could not delete episode ${episodeIndex}: ${(err as Error).message}`,
+        `Deleted ${deleted}/${indices.length} episodes. Last error: ${lastErr}`,
       );
     }
   });

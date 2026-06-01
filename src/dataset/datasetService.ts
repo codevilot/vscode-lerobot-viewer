@@ -409,7 +409,88 @@ export class DatasetService implements vscode.Disposable {
     }
 
     await this.deleteV2Episode(descriptor.root, snapshot, episode);
+    await this.reindexAfterDelete(descriptor.root, episodeIndex, snapshot);
     this.invalidate(datasetId);
+  }
+
+  private async reindexAfterDelete(
+    root: string, deletedIdx: number, snapshot: DatasetSnapshot,
+  ): Promise<void> {
+    // 1. Update episodes.jsonl — remove deleted, renumber remaining.
+    const epPath = path.join(root, "meta", "episodes.jsonl");
+    if (!(await exists(epPath))) return;
+    const epText = await fs.readFile(epPath, "utf8");
+    let eps = epText.trim().split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((e) => e.episode_index !== deletedIdx);
+    const oldToNew = new Map<number, number>();
+    eps = eps.map((e, i) => {
+      const old = e.episode_index as number;
+      oldToNew.set(old, i);
+      return { ...e, episode_index: i };
+    });
+    const { writeJsonl } = await import("./adapters/util");
+    await writeJsonl(epPath, eps);
+
+    // 2. Rename parquet + video files for episodes that got new indices.
+    const chunkSize = snapshot.info.chunksSize ?? 1000;
+    for (const [oldIdx, newIdx] of oldToNew) {
+      if (oldIdx === newIdx) continue;
+      const oldChunk = String(Math.floor(oldIdx / chunkSize)).padStart(3, "0");
+      const newChunk = String(Math.floor(newIdx / chunkSize)).padStart(3, "0");
+      const oldEp = String(oldIdx).padStart(6, "0");
+      const newEp = String(newIdx).padStart(6, "0");
+      // Rename parquet.
+      const dataTpl = snapshot.info.dataPath ?? "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet";
+      const oldData = path.join(root, dataTpl
+        .replace("{episode_chunk:03d}", oldChunk)
+        .replace("{episode_index:06d}", oldEp));
+      const newData = path.join(root, dataTpl
+        .replace("{episode_chunk:03d}", newChunk)
+        .replace("{episode_index:06d}", newEp));
+      if (await exists(oldData) && oldData !== newData) {
+        await fs.mkdir(path.dirname(newData), { recursive: true });
+        await fs.rename(oldData, newData);
+      }
+      // Rename videos.
+      const vidTpl = snapshot.info.videoPath ?? "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4";
+      for (const cam of snapshot.cameraKeys) {
+        const oldVid = path.join(root, vidTpl
+          .replace("{episode_chunk:03d}", oldChunk)
+          .replace("{video_key}", cam)
+          .replace("{episode_index:06d}", oldEp));
+        const newVid = path.join(root, vidTpl
+          .replace("{episode_chunk:03d}", newChunk)
+          .replace("{video_key}", cam)
+          .replace("{episode_index:06d}", newEp));
+        if (await exists(oldVid) && oldVid !== newVid) {
+          await fs.mkdir(path.dirname(newVid), { recursive: true });
+          await fs.rename(oldVid, newVid);
+        }
+      }
+    }
+
+    // 3. Update episodes_stats.jsonl — remove deleted, renumber remaining.
+    const statsPath = path.join(root, "meta", "episodes_stats.jsonl");
+    if (await exists(statsPath)) {
+      const statsText = await fs.readFile(statsPath, "utf8");
+      let statsLines = statsText.trim().split("\n")
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((s) => s.episode_index !== deletedIdx);
+      statsLines = statsLines.map((s, i) => ({ ...s, episode_index: i }));
+      await writeJsonl(statsPath, statsLines);
+    }
+
+    // 4. Update info.json totals.
+    const infoPath = path.join(root, "meta", "info.json");
+    if (await exists(infoPath)) {
+      const raw = JSON.parse(await fs.readFile(infoPath, "utf8")) as Record<string, unknown>;
+      if (typeof raw.total_episodes === "number") raw.total_episodes = eps.length;
+      const totalFrames = eps.reduce((s, e) => s + (e.length as number), 0);
+      raw.total_frames = totalFrames;
+      if (typeof raw.total_videos === "number") raw.total_videos = eps.length * snapshot.cameraKeys.length;
+      await fs.writeFile(infoPath, JSON.stringify(raw, null, 2), "utf8");
+    }
   }
 
   private async persistV2EpisodeMetadata(root: string, episodeIndex: number): Promise<void> {

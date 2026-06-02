@@ -29,11 +29,16 @@ export function VideoPreview({
     const video = ref.current;
     if (!video) return;
     if (isPlaying) {
-      void video.play().catch(() => {/* autoplay can fail; ignored */});
+      if (video.readyState >= 2) {
+        void video.play().catch(() => {});
+      } else {
+        const onReady = () => { video.play().catch(() => {}); video.removeEventListener("canplay", onReady); };
+        video.addEventListener("canplay", onReady);
+      }
     } else {
       video.pause();
     }
-  }, [isPlaying]);
+  }, [isPlaying, camera.videoUri]);
 
   if (!camera.videoUri) {
     return (

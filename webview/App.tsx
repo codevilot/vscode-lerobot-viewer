@@ -103,6 +103,12 @@ export function App({ initial }: { initial: EpisodePreviewData }) {
   const playback = usePlayback(videoRefs, fps, totalFrames, shardFrameOffset);
   usePlaybackShortcuts(playback, fps, totalFrames);
 
+  // Autoplay when switching episodes.
+  useEffect(() => {
+    playback.setIsPlaying(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.episode.episodeIndex]);
+
   useEffect(() => {
     const off = bridge.onMessage((msg) => {
       if (msg.type === "init") {

@@ -165,6 +165,11 @@
         "command": "lerobotViewer.renameFeature",
         "title": "LeRobot: Rename Feature",
         "icon": "$(edit)"
+      },
+      {
+        "command": "lerobotViewer.convertToV30",
+        "title": "LeRobot: Convert to v3.0",
+        "icon": "$(export)"
       }
     ],
     "menus": {
@@ -242,34 +247,39 @@
           "group": "1_modify@2"
         },
         {
-          "command": "lerobotViewer.convertToV21",
+          "command": "lerobotViewer.convertToV30",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@3"
         },
         {
-          "command": "lerobotViewer.deleteFeature",
+          "command": "lerobotViewer.convertToV21",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@4"
         },
         {
-          "command": "lerobotViewer.dropDimensions",
+          "command": "lerobotViewer.deleteFeature",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@5"
         },
         {
-          "command": "lerobotViewer.renameFeature",
+          "command": "lerobotViewer.dropDimensions",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@6"
         },
         {
-          "command": "lerobotViewer.recomputeStats",
+          "command": "lerobotViewer.renameFeature",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@7"
         },
         {
-          "command": "lerobotViewer.revealInExplorer",
+          "command": "lerobotViewer.recomputeStats",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@8"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@9"
         }
       ],
       "commandPalette": [
@@ -319,6 +329,10 @@
         },
         {
           "command": "lerobotViewer.renameFeature",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.convertToV30",
           "when": "false"
         }
       ]

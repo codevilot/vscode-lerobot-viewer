@@ -25,6 +25,7 @@ import { dropDimensions } from "./dataset/dropDimensions";
 import { deleteFeature } from "./dataset/deleteFeature";
 import { recomputeStats } from "./dataset/computeStats";
 import { renameFeature } from "./dataset/renameFeature";
+import { convertV21ToV30 } from "./dataset/convertV21ToV30";
 import type { SshTarget } from "./types";
 
 export const CommandIds = {
@@ -49,6 +50,7 @@ export const CommandIds = {
   deleteFeature: "lerobotViewer.deleteFeature",
   recomputeStats: "lerobotViewer.recomputeStats",
   renameFeature: "lerobotViewer.renameFeature",
+  convertToV30: "lerobotViewer.convertToV30",
 } as const;
 
 interface PreviewArgs {
@@ -720,6 +722,54 @@ export function registerCommands(
       void vscode.window.showInformationMessage(`Renamed "${pick.key}" → "${newName.trim()}".`);
     } catch (err) {
       void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.convertToV30, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) {
+      void vscode.window.showInformationMessage("Use the context menu on a dataset to convert to v3.0.");
+      return;
+    }
+    const descriptor = service.get(datasetId);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Conversion is only supported for local datasets.");
+      return;
+    }
+    let snapshot;
+    try { snapshot = await service.getSnapshot(datasetId); } catch (err) {
+      void vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
+      return;
+    }
+    if (snapshot.version === "v3.0") {
+      void vscode.window.showInformationMessage("Dataset is already v3.0.");
+      return;
+    }
+    const targetUri = await vscode.window.showOpenDialog({
+      canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+      openLabel: "Select target folder for v3.0 dataset",
+    });
+    if (!targetUri || targetUri.length === 0) return;
+    const targetRoot = targetUri[0].fsPath;
+
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Converting ${descriptor.name} to v3.0`, cancellable: false },
+        async (progress) => {
+          let last = 0;
+          await convertV21ToV30(descriptor.root!, targetRoot, (p) => {
+            if (p.done - last >= 1 || p.done === p.total) {
+              last = p.done;
+              progress.report({ message: p.current || `${p.done}/${p.total}` });
+            }
+          });
+        },
+      );
+      void vscode.window.showInformationMessage(`Converted to v3.0 at ${targetRoot}.`);
+      await service.addLocalFolder(vscode.Uri.file(targetRoot));
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Conversion failed: ${(err as Error).message}`);
     }
   });
 

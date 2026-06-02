@@ -272,6 +272,7 @@ function EpisodeMetaHeader({ data }: { data: EpisodePreviewData }) {
   const frames = ep.length ?? 0;
   const duration = frames / Math.max(1, fps);
   const task = ep.tasks[0];
+  const taskIdx = task ? data.tasks.find((t) => t.task === task)?.taskIndex : undefined;
   const epLabel = `ep_${ep.episodeIndex.toString().padStart(3, "0")}`;
 
   return (
@@ -288,7 +289,13 @@ function EpisodeMetaHeader({ data }: { data: EpisodePreviewData }) {
       <MetaRow label="frames" value={frames.toLocaleString()} />
       <MetaRow label="duration" value={`${duration.toFixed(2)}s`} />
       <MetaRow label="fps" value={String(data.info.fps)} />
-      {task && <MetaRow label="task" value={task} truncate />}
+      {task && (
+        <MetaRow
+          label="task"
+          value={taskIdx !== undefined ? `[${taskIdx}] ${task}` : task}
+          truncate
+        />
+      )}
       {data.episodeSplit && <MetaRow label="split" value={data.episodeSplit} accent="green" />}
       {data.info.robotType && data.info.robotType !== "unknown" && (
         <MetaRow label="robot" value={data.info.robotType} />

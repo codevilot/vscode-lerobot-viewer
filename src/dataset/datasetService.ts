@@ -331,6 +331,22 @@ export class DatasetService implements vscode.Disposable {
     log(`Deleted task "${taskName}" from dataset ${id}`);
   }
 
+  /** Change the task_index of a task. */
+  async reindexTask(id: string, taskName: string, newIndex: number): Promise<void> {
+    const { adapter, root } = await this.getWritableAdapter(id);
+    const ctx = { root, info: await adapter.loadInfo(root) };
+    const tasks = await adapter.loadTasks(ctx);
+    const target = tasks.find((t) => t.task === taskName);
+    if (!target) throw new Error(`Task "${taskName}" not found.`);
+    if (tasks.some((t) => t.taskIndex === newIndex && t.task !== taskName)) {
+      throw new Error(`Task index ${newIndex} is already in use.`);
+    }
+    target.taskIndex = newIndex;
+    await adapter.saveTasks!(root, tasks);
+    this.snapshotCache.delete(id);
+    log(`Reindexed task "${taskName}" to [${newIndex}] in dataset ${id}`);
+  }
+
   /** Set which tasks an episode belongs to. */
   async setEpisodeTasks(datasetId: string, episodeIndex: number, taskNames: string[]): Promise<void> {
     const { adapter, root } = await this.getWritableAdapter(datasetId);

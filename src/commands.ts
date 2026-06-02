@@ -836,7 +836,7 @@ interface TaskPickItem extends vscode.QuickPickItem {
 }
 
 interface TaskActionItem extends vscode.QuickPickItem {
-  actionKind: "action-rename" | "action-delete" | "action-back";
+  actionKind: "action-rename" | "action-reindex" | "action-delete" | "action-back";
   taskName?: string;
 }
 
@@ -909,6 +909,7 @@ async function showTaskActions(
 ): Promise<void> {
   const items: TaskActionItem[] = [
     { actionKind: "action-rename", label: `$(edit) Rename "${taskName}"`, taskName },
+    { actionKind: "action-reindex", label: `$(symbol-number) Change Index "${taskName}"`, taskName },
     { actionKind: "action-delete", label: `$(trash) Delete "${taskName}"`, taskName },
   ];
 
@@ -924,6 +925,8 @@ async function showTaskActions(
 
   if (pick.actionKind === "action-rename") {
     await runRenameTask(service, datasetId, taskName, tasks);
+  } else if (pick.actionKind === "action-reindex") {
+    await runReindexTask(service, datasetId, taskName, tasks);
   } else if (pick.actionKind === "action-delete") {
     await runDeleteTask(service, datasetId, taskName);
   } else if (pick.actionKind === "action-back") {
@@ -997,6 +1000,38 @@ async function runRenameTask(
   } catch {
     // ignore
   }
+}
+
+async function runReindexTask(
+  service: DatasetService,
+  datasetId: string,
+  taskName: string,
+  tasks: { taskIndex: number; task: string }[],
+): Promise<void> {
+  const curIdx = tasks.find((t) => t.task === taskName)?.taskIndex;
+  const newIdxStr = await vscode.window.showInputBox({
+    prompt: `Change task_index for "${taskName}" (current: ${curIdx})`,
+    value: String(curIdx ?? 0),
+    validateInput: (v) => {
+      const n = parseInt(v, 10);
+      if (!Number.isFinite(n) || n < 0) return "Must be a non-negative integer.";
+      if (n === curIdx) return "Index unchanged.";
+      if (tasks.some((t) => t.taskIndex === n && t.task !== taskName)) return `Index ${n} already in use.`;
+      return undefined;
+    },
+  });
+  if (!newIdxStr) return;
+  try {
+    await service.reindexTask(datasetId, taskName, parseInt(newIdxStr, 10));
+    void vscode.window.showInformationMessage(`Task "${taskName}" reindexed to [${newIdxStr}].`);
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
+    return;
+  }
+  try {
+    const refreshed = await service.getSnapshot(datasetId);
+    await showMainMenu(service, datasetId, refreshed.tasks);
+  } catch { /* ignore */ }
 }
 
 async function runDeleteTask(

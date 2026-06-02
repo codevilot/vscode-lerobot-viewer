@@ -27,7 +27,7 @@ export function usePlayback(
   shardFrameOffset?: number,
 ): PlaybackController {
   const [frame, setFrame] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
   const [loop, setLoop] = useState(false);
 

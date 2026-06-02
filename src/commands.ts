@@ -773,9 +773,13 @@ export function registerCommands(
     }
   });
 
-  reg(CommandIds.deleteEpisode, async () => {
-    // Support multi-select from tree (same pattern as editEpisodeTasks).
-    const nodes = extractEpisodeNodesFromSelection(treeView.selection);
+  reg(CommandIds.deleteEpisode, async (...args: unknown[]) => {
+    // Inline click passes the EpisodeNode as args[0]; context menu uses selection.
+    const arg = args[0];
+    let nodes = extractEpisodeNodesFromSelection(treeView.selection);
+    if (nodes.length === 0 && isEpisodeNode(arg)) {
+      nodes = [arg];
+    }
     if (nodes.length === 0) {
       void vscode.window.showInformationMessage("Select one or more episodes to delete.");
       return;

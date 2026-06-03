@@ -7,7 +7,7 @@ import { V21Adapter } from "./adapters/V21Adapter";
 import { V30Adapter } from "./adapters/V30Adapter";
 import { exists, readJson, buildDataPath } from "./adapters/util";
 import { computeVideoFeatureStats } from "./videoStats";
-import { writeStatsJsonl } from "./statsJson";
+import { writeStatsJsonl, floatifyArraysInJson } from "./statsJson";
 import type { LeRobotInfo, LeRobotEpisode } from "../types";
 
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
@@ -123,9 +123,12 @@ export async function recomputeStats(
     // v3.0: write global stats.json only (no per-episode stats file).
     const globalStats = globalAcc.toPerEpisode(resolveKey);
     if ((globalAcc as any)._videoStats) Object.assign(globalStats, (globalAcc as any)._videoStats);
+    // floatify to prevent Python's json.load from inferring int64 for
+    // whole-number values, which would cause Arrow type conflicts.
+    const raw = JSON.stringify(globalStats, null, 2);
     await fs.writeFile(
       path.join(root, "meta", "stats.json"),
-      JSON.stringify(globalStats, null, 2),
+      floatifyArraysInJson(raw),
       "utf8",
     );
   } else {

@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { V21Adapter } from "./adapters/V21Adapter";
 import { buildDataPath, buildVideoPath, exists, writeJsonl, readJson, readJsonlIfExists } from "./adapters/util";
 import { buildParquetSchema } from "./parquetSchema";
-import { writeStatsJsonl } from "./statsJson";
+import { writeStatsJsonl, floatifyArraysInJson } from "./statsJson";
 import type { LeRobotInfo } from "../types";
 
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
@@ -86,9 +86,12 @@ export async function convertV21ToV30(
     const epStats = await readJsonlIfExists(epStatsPath);
     if (epStats && epStats.length > 0) {
       const globalStats = aggregateEpisodeStats(epStats);
+      // floatify to prevent Python's json.load from inferring int64
+      // for whole-number values, which would cause Arrow type conflicts.
+      const rawStats = JSON.stringify(globalStats, null, 2);
       await fs.writeFile(
         path.join(targetRoot, "meta", "stats.json"),
-        JSON.stringify(globalStats, null, 2), "utf8",
+        floatifyArraysInJson(rawStats), "utf8",
       );
     }
   }
@@ -205,10 +208,20 @@ async function buildVideoShards(
       await fs.unlink(listFile).catch(() => {});
     }
 
+    // Resolve actual durations for all episodes in this batch in parallel.
+    const durations = await Promise.all(
+      batch.map((ev) =>
+        ev.path
+          ? getVideoDuration(ev.path)
+          : Promise.resolve((ev.ep.length ?? 0) / (info.fps || 30)),
+      ),
+    );
+
     // Boundaries for ALL episodes in batch (including missing videos).
     let batchTs = 0;
-    for (const ev of batch) {
-      const dur = (ev.ep.length ?? 0) / (info.fps || 30);
+    for (let j = 0; j < batch.length; j++) {
+      const ev = batch[j];
+      const dur = durations[j];
       boundaries.push({
         episode_index: ev.ep.episodeIndex,
         chunk_index: 0,
@@ -525,5 +538,21 @@ function execFile(cmd: string, args: string[]): Promise<void> {
       else reject(new Error(`${cmd} exited ${code}`));
     });
     proc.on("error", reject);
+  });
+}
+
+/** Get the actual duration (seconds) of a video file via ffprobe. */
+async function getVideoDuration(videoPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    const proc = cp.spawn("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      videoPath,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    proc.on("close", () => resolve(parseFloat(stdout) || 0));
+    proc.on("error", () => resolve(0));
   });
 }

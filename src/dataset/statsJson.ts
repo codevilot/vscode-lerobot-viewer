@@ -19,7 +19,7 @@ export async function writeStatsJsonl(
   await fs.writeFile(filePath, lines, "utf8");
 }
 
-function floatifyArraysInJson(json: string): string {
+export function floatifyArraysInJson(json: string): string {
   // Match numeric literals that are array elements:
   // - preceded by [ or , (with optional whitespace)
   // - followed by , or ] (with optional whitespace)

@@ -349,6 +349,17 @@ async function writeEpisodesParquet(dstRoot: string, records: Record<string, unk
 }
 
 /** Aggregate per-episode stats into a global stats.json for v3.0. */
+/** Flatten nested arrays like [[[r]], [[g]], [[b]]] into [r, g, b]. */
+function flattenNested(arr: any[]): number[] {
+  const out: number[] = [];
+  const visit = (v: unknown) => {
+    if (Array.isArray(v)) { for (const x of v) visit(x); }
+    else if (typeof v === "number") out.push(v);
+  };
+  visit(arr);
+  return out;
+}
+
 function aggregateEpisodeStats(epStats: Record<string, unknown>[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (epStats.length === 0) return out;
@@ -378,8 +389,12 @@ function aggregateEpisodeStats(epStats: Record<string, unknown>[]): Record<strin
         const feat = s[fk] as Record<string, unknown> | undefined;
         if (!feat) continue;
         const val = feat[field];
-        if (Array.isArray(val)) { allValues.push(val); dim = (val as number[]).length; }
-        else if (typeof val === "number") { allValues.push([val]); dim = 1; }
+        if (Array.isArray(val)) {
+          // Flatten nested arrays (video stats: [[[r]], [[g]], [[b]]] → [r, g, b]).
+          const flat = flattenNested(val as any[]);
+          allValues.push(flat);
+          dim = flat.length;
+        } else if (typeof val === "number") { allValues.push([val]); dim = 1; }
       }
 
       if (allValues.length === 0) continue;

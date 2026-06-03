@@ -210,11 +210,13 @@ class StatsAccumulator {
     for (const pk of this.counts.keys()) {
       const count = this.counts.get(pk)!;
       const vals = this.values.get(pk)!;
-      const q01 = vals.map((v) => quantile(v, 0.01));
-      const q10 = vals.map((v) => quantile(v, 0.10));
-      const q50 = vals.map((v) => quantile(v, 0.50));
-      const q90 = vals.map((v) => quantile(v, 0.90));
-      const q99 = vals.map((v) => quantile(v, 0.99));
+      // Pre-sort each dimension once, then compute all quantiles from the sorted arrays.
+      const sorted = vals.map((v) => v.slice().sort((a, b) => a - b));
+      const q01 = sorted.map((s) => quantileFromSorted(s, 0.01));
+      const q10 = sorted.map((s) => quantileFromSorted(s, 0.10));
+      const q50 = sorted.map((s) => quantileFromSorted(s, 0.50));
+      const q90 = sorted.map((s) => quantileFromSorted(s, 0.90));
+      const q99 = sorted.map((s) => quantileFromSorted(s, 0.99));
       out[resolveKey(pk)] = {
         min: this.mins.get(pk),
         max: this.maxs.get(pk),
@@ -232,9 +234,9 @@ class StatsAccumulator {
   }
 }
 
-function quantile(sorted: number[], q: number): number {
+/** Return the q-th quantile of an already-sorted array (linear interpolation). */
+function quantileFromSorted(sorted: number[], q: number): number {
   if (sorted.length === 0) return 0;
-  sorted.sort((a, b) => a - b);
   const pos = q * (sorted.length - 1);
   const lo = Math.floor(pos);
   const hi = Math.ceil(pos);

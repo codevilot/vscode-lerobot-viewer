@@ -4,10 +4,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { V21Adapter } from "./adapters/V21Adapter";
-import { exists, readJson } from "./adapters/util";
+import { V30Adapter } from "./adapters/V30Adapter";
+import { exists, readJson, buildDataPath } from "./adapters/util";
 import { computeVideoFeatureStats } from "./videoStats";
 import { writeStatsJsonl } from "./statsJson";
-import type { LeRobotInfo } from "../types";
+import type { LeRobotInfo, LeRobotEpisode } from "../types";
 
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
 function getHyparquet() {
@@ -23,24 +24,64 @@ export async function recomputeStats(
   root: string,
   onProgress: (p: StatsProgress) => void,
 ): Promise<void> {
-  const adapter = new V21Adapter();
-  const info = await adapter.loadInfo(root);
-  const episodes = await adapter.loadEpisodes({ root, info });
+  // Detect version and use appropriate adapter.
+  const { detectDatasetVersion } = await import("./DatasetVersionDetector");
+  const version = (await detectDatasetVersion(root)).version;
+  const isV3 = version === "v3.0";
+
+  let info: LeRobotInfo;
+  let episodes: LeRobotEpisode[];
+  let resolveKey: (pk: string) => string;
+  let readEpisodeRows: (ep: LeRobotEpisode) => Promise<Record<string, unknown>[]>;
+
+  if (isV3) {
+    const adapter = new V30Adapter();
+    info = await adapter.loadInfo(root);
+    episodes = await adapter.loadEpisodes({ root, info });
+    resolveKey = featureKeyMap(info);
+
+    // For v3.0, read only the episode's rows from the shard using frameRange.
+    let shardCache = new Map<string, Record<string, unknown>[]>();
+    readEpisodeRows = async (ep: LeRobotEpisode) => {
+      const key = ep.dataShard
+        ? `${ep.dataShard.chunkIndex}/${ep.dataShard.fileIndex}`
+        : `ep${ep.episodeIndex}`;
+      let rows = shardCache.get(key);
+      if (!rows) {
+        const dataPath = resolveV3DataPath(root, info, ep);
+        if (!dataPath || !(await exists(dataPath))) return [];
+        const { parquetReadObjects, asyncBufferFromFile } = await getHyparquet();
+        const buffer = await asyncBufferFromFile(dataPath);
+        rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
+        shardCache.set(key, rows!);
+      }
+      if (ep.frameRange) return (rows ?? []).slice(ep.frameRange[0], ep.frameRange[1]);
+      return (rows ?? []).filter((r) => Number(r.episode_index) === ep.episodeIndex);
+    };
+  } else {
+    const adapter = new V21Adapter();
+    info = await adapter.loadInfo(root);
+    episodes = await adapter.loadEpisodes({ root, info });
+    resolveKey = featureKeyMap(info);
+    readEpisodeRows = async (ep: LeRobotEpisode) => {
+      const dataPath = await adapter.resolveDataFile({ root, info }, ep);
+      if (!dataPath || !(await exists(dataPath))) return [];
+      const { parquetReadObjects, asyncBufferFromFile } = await getHyparquet();
+      const buffer = await asyncBufferFromFile(dataPath);
+      return (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
+    };
+  }
+
   if (episodes.length === 0) throw new Error("No episodes found.");
 
-  const resolveKey = featureKeyMap(info);
   const epStatsRecords: Record<string, unknown>[] = [];
   const globalAcc = new StatsAccumulator();
+  const isV3Stats = isV3; // v3.0 writes stats.json directly, not episodes_stats.jsonl
 
   for (let i = 0; i < episodes.length; i++) {
     const ep = episodes[i];
-    const dataPath = await adapter.resolveDataFile({ root, info }, ep);
-    if (!dataPath || !(await exists(dataPath))) {
-      throw new Error(`Parquet not found for episode ${ep.episodeIndex}.`);
-    }
-    const { parquetReadObjects, asyncBufferFromFile } = await getHyparquet();
-    const buffer = await asyncBufferFromFile(dataPath);
-    const rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
+    const rows = await readEpisodeRows(ep);
+    if (rows.length === 0) { onProgress({ done: i + 1, total: episodes.length }); continue; }
     const clean = rows.map(sanitizeRow);
 
     const epAcc = new StatsAccumulator();
@@ -78,7 +119,31 @@ export async function recomputeStats(
       if (s) Object.assign(s, (globalAcc as any)._videoStats);
     }
   }
-  await writeStatsJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
+  if (isV3) {
+    // v3.0: write global stats.json only (no per-episode stats file).
+    const globalStats = globalAcc.toPerEpisode(resolveKey);
+    if ((globalAcc as any)._videoStats) Object.assign(globalStats, (globalAcc as any)._videoStats);
+    await fs.writeFile(
+      path.join(root, "meta", "stats.json"),
+      JSON.stringify(globalStats, null, 2),
+      "utf8",
+    );
+  } else {
+    await writeStatsJsonl(path.join(root, "meta", "episodes_stats.jsonl"), epStatsRecords);
+  }
+}
+
+function resolveV3DataPath(
+  root: string, info: LeRobotInfo, episode: LeRobotEpisode,
+): string | undefined {
+  if (!episode.dataShard) return undefined;
+  const filled = buildDataPath({
+    template: info.dataPath ?? "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+    chunkIndex: episode.dataShard.chunkIndex,
+    fileIndex: episode.dataShard.fileIndex,
+    episodeIndex: episode.episodeIndex,
+  });
+  return path.join(root, filled);
 }
 
 // ---- stats accumulator (Welford online algorithm) ----

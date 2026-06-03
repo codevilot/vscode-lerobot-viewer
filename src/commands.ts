@@ -643,8 +643,8 @@ export function registerCommands(
       void vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
       return;
     }
-    if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1") {
-      void vscode.window.showInformationMessage("Stats recomputation is only supported for v2.x datasets.");
+    if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1" && snapshot.version !== "v3.0") {
+      void vscode.window.showInformationMessage("Stats recomputation is only supported for v2.x and v3.0 datasets.");
       return;
     }
     try {

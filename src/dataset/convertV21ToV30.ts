@@ -430,6 +430,21 @@ function aggregateEpisodeStats(epStats: Record<string, unknown>[]): Record<strin
       aggregated["count"] = [totalCount];
     }
 
+    // If the original stats were 3-level nested (video format: [[[r]], [[g]], [[b]]]),
+    // re-nest the aggregated values to match.
+    const sampleVal = firstFeat["min"];
+    const isNested = sampleVal !== undefined && Array.isArray(sampleVal) &&
+      Array.isArray(sampleVal[0]) && Array.isArray((sampleVal as any[])[0][0]);
+    if (isNested) {
+      for (const field of Object.keys(aggregated)) {
+        if (field === "count") continue;
+        const arr = aggregated[field] as number[];
+        if (Array.isArray(arr)) {
+          aggregated[field] = arr.map((v) => [[v]]);
+        }
+      }
+    }
+
     out[fk] = aggregated;
   }
 

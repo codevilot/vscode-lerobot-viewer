@@ -55,12 +55,25 @@ export async function convertV21ToV30(
   const videoBoundaries: Record<string, Array<Record<string, unknown>>> = {};
   if (ffmpegOk) {
     for (const cam of cameraKeys) {
-      videoBoundaries[cam] = await buildVideoShards(sourceRoot, targetRoot, info, sorted, cam, chunksSize, onProgress);
+      const vb = await buildVideoShards(sourceRoot, targetRoot, info, sorted, cam, chunksSize, onProgress);
+      if (vb.length !== sorted.length) {
+        onProgress({
+          done: 0, total, current:
+            `Warn: video boundary count mismatch for ${cam}: ${vb.length} vs ${sorted.length} episodes`,
+        });
+      }
+      videoBoundaries[cam] = vb;
     }
   }
 
   // ---- Write boundary parquet ----
   onProgress({ done: 0, total, current: "Writing boundary parquet..." });
+  if (dataBoundaries.length !== sorted.length) {
+    throw new Error(
+      `Data boundary count mismatch: ${dataBoundaries.length} boundaries vs ${sorted.length} episodes. ` +
+      `Some episodes were not processed for data shards.`,
+    );
+  }
   await writeBoundaryParquet(targetRoot, sorted, dataBoundaries, videoBoundaries, tasks);
 
   // ---- Write info.json ----
@@ -108,6 +121,12 @@ async function buildDataShards(
     const buffer = await asyncBufferFromFile(dataPath);
     const rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
     const cleanRows = rows.map(sanitizeRow);
+    // Overwrite episode_index to match the actual episode (fixes stale values
+    // from episode deletion/reindex that renamed files but left old column values).
+    for (const r of cleanRows) r.episode_index = ep.episodeIndex;
+    if (cleanRows.length === 0) {
+      onProgress({ done: i + 1, total: episodes.length, current: `Warn: ep ${ep.episodeIndex} has 0 rows` });
+    }
 
     const from = rowOffset;
     rowOffset += cleanRows.length;
@@ -151,56 +170,56 @@ async function buildVideoShards(
   camKey: string, chunksSize: number,
   onProgress: (p: ConvertProgress) => void,
 ): Promise<Array<Record<string, unknown>>> {
-  // Collect episode video paths.
-  const epPaths: string[] = [];
+  // Collect episode video paths. Missing videos → placeholder.
+  interface EpVideo { path?: string; ep: typeof episodes[0] }
+  const epVideos: EpVideo[] = [];
   for (const ep of episodes) {
     const chunkIdx = Math.floor(ep.episodeIndex / chunksSize);
     const tpl = info.videoPath ?? "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4";
     const rel = buildVideoPath({ template: tpl, chunkIndex: chunkIdx, fileIndex: 0, episodeIndex: ep.episodeIndex, videoKey: camKey });
     const abs = path.join(srcRoot, rel);
-    if (await exists(abs)) epPaths.push(abs);
+    epVideos.push({ path: await exists(abs) ? abs : undefined, ep });
   }
 
-  // Simple approach: group 100 episodes per video shard.
+  // Group 100 episodes per video shard.
   const boundaries: Array<Record<string, unknown>> = [];
   const batchSize = 100;
   let fileIndex = 0;
-  let tsOffset = 0;
 
-  for (let i = 0; i < epPaths.length; i += batchSize) {
-    const batch = epPaths.slice(i, i + batchSize);
+  for (let i = 0; i < epVideos.length; i += batchSize) {
+    const batch = epVideos.slice(i, i + batchSize);
+    const existing = batch.filter((ev) => ev.path).map((ev) => ev.path!);
+
     const dstRel = buildVideoPath({
       template: "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
       chunkIndex: 0, fileIndex, episodeIndex: 0, videoKey: camKey,
     });
     const dstPath = path.join(dstRoot, dstRel);
-    await fs.mkdir(path.dirname(dstPath), { recursive: true });
 
-    // Concatenate with ffmpeg concat demuxer.
-    const concatList = batch.map((p) => `file '${p}'`).join("\n");
-    const listFile = dstPath + ".txt";
-    await fs.writeFile(listFile, concatList, "utf8");
-    await execFile("ffmpeg", ["-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", "-y", dstPath]);
-    await fs.unlink(listFile).catch(() => {});
+    if (existing.length > 0) {
+      await fs.mkdir(path.dirname(dstPath), { recursive: true });
+      const concatList = existing.map((p) => `file '${p}'`).join("\n");
+      const listFile = dstPath + ".txt";
+      await fs.writeFile(listFile, concatList, "utf8");
+      await execFile("ffmpeg", ["-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", "-y", dstPath]);
+      await fs.unlink(listFile).catch(() => {});
+    }
 
-    // Compute timestamps for each episode in this batch.
+    // Boundaries for ALL episodes in batch (including missing videos).
     let batchTs = 0;
-    for (let j = 0; j < batch.length; j++) {
-      const epIdx = i + j;
-      const ep = episodes[epIdx];
-      const dur = (ep.length ?? 0) / (info.fps || 30);
+    for (const ev of batch) {
+      const dur = (ev.ep.length ?? 0) / (info.fps || 30);
       boundaries.push({
-        episode_index: ep.episodeIndex,
+        episode_index: ev.ep.episodeIndex,
         chunk_index: 0,
-        file_index: fileIndex,
+        file_index: ev.path ? fileIndex : null,
         from_timestamp: batchTs,
         to_timestamp: batchTs + dur,
       });
       batchTs += dur;
     }
-    tsOffset += batchTs;
     fileIndex++;
-    onProgress({ done: Math.min(i + batchSize, epPaths.length), total: epPaths.length, current: `Video ${camKey}` });
+    onProgress({ done: Math.min(i + batchSize, epVideos.length), total: epVideos.length, current: `Video ${camKey}` });
   }
 
   return boundaries;
@@ -230,7 +249,7 @@ async function writeBoundaryParquet(
     };
     for (const [cam, bounds] of Object.entries(videoBounds)) {
       const vb = bounds[i] as Record<string, unknown> | undefined;
-      if (vb) {
+      if (vb && vb.file_index != null) {
         rec[`videos/${cam}/chunk_index`] = vb.chunk_index;
         rec[`videos/${cam}/file_index`] = vb.file_index;
         rec[`videos/${cam}/from_timestamp`] = vb.from_timestamp;

@@ -467,6 +467,8 @@ export class DatasetService implements vscode.Disposable {
       if (await exists(oldData) && oldData !== newData) {
         await fs.mkdir(path.dirname(newData), { recursive: true });
         await fs.rename(oldData, newData);
+        // Update episode_index column inside the parquet to match the new index.
+        await this.fixEpisodeIndex(newData, newIdx);
       }
       // Rename videos.
       const vidTpl = snapshot.info.videoPath ?? "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4";
@@ -506,6 +508,46 @@ export class DatasetService implements vscode.Disposable {
       raw.total_frames = totalFrames;
       if (typeof raw.total_videos === "number") raw.total_videos = eps.length * snapshot.cameraKeys.length;
       await fs.writeFile(infoPath, JSON.stringify(raw, null, 2), "utf8");
+    }
+  }
+
+  private async fixEpisodeIndex(parquetPath: string, newIndex: number): Promise<void> {
+    try {
+      const { parquetReadObjects, asyncBufferFromFile } = await import("hyparquet");
+      const pjs = require("parquetjs");
+      const buffer = await asyncBufferFromFile(parquetPath);
+      const rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
+      if (rows.length === 0) return;
+
+      // Update episode_index in every row.
+      for (const r of rows) r.episode_index = newIndex;
+
+      // Build schema from first row (preserve types).
+      const first = rows[0];
+      const schemaFields: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(first)) {
+        if (v === null || v === undefined) continue;
+        const isArr = Array.isArray(v);
+        const sample = isArr ? (v as unknown[])[0] : v;
+        const t = typeof sample === "number"
+          ? (Number.isInteger(sample) ? "INT64" : "DOUBLE")
+          : typeof sample === "boolean" ? "BOOLEAN" : "UTF8";
+        schemaFields[k] = isArr ? { type: t, repeated: true } : { type: t };
+      }
+      const schema = new pjs.ParquetSchema(schemaFields);
+
+      const tmpPath = parquetPath + ".tmp";
+      const writer = await pjs.ParquetWriter.openFile(schema, tmpPath, { compression: "UNCOMPRESSED" });
+      for (const r of rows) {
+        for (const [k, v] of Object.entries(r)) {
+          if (typeof v === "bigint") (r as any)[k] = Number(v);
+        }
+        await writer.appendRow(r);
+      }
+      await writer.close();
+      await fs.rename(tmpPath, parquetPath);
+    } catch (err) {
+      logError(`fixEpisodeIndex for ${parquetPath}`, err);
     }
   }
 

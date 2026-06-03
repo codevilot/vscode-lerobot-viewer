@@ -170,6 +170,11 @@
         "command": "lerobotViewer.convertToV30",
         "title": "LeRobot: Convert to v3.0",
         "icon": "$(export)"
+      },
+      {
+        "command": "lerobotViewer.fixEpisodeIndex",
+        "title": "LeRobot: Fix Episode Index",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
@@ -272,14 +277,19 @@
           "group": "1_modify@7"
         },
         {
-          "command": "lerobotViewer.recomputeStats",
+          "command": "lerobotViewer.fixEpisodeIndex",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@8"
         },
         {
-          "command": "lerobotViewer.revealInExplorer",
+          "command": "lerobotViewer.recomputeStats",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@9"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@10"
         }
       ],
       "commandPalette": [
@@ -333,6 +343,10 @@
         },
         {
           "command": "lerobotViewer.convertToV30",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.fixEpisodeIndex",
           "when": "false"
         }
       ]

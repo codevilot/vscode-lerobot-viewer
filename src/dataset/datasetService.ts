@@ -501,7 +501,7 @@ export class DatasetService implements vscode.Disposable {
       await writeStatsJsonl(statsPath, statsLines);
     }
 
-    // 4. Update info.json totals.
+    // 4. Update info.json totals and splits.
     const infoPath = path.join(root, "meta", "info.json");
     if (await exists(infoPath)) {
       const raw = JSON.parse(await fs.readFile(infoPath, "utf8")) as Record<string, unknown>;
@@ -509,6 +509,16 @@ export class DatasetService implements vscode.Disposable {
       const totalFrames = eps.reduce((s, e) => s + (e.length as number), 0);
       raw.total_frames = totalFrames;
       if (typeof raw.total_videos === "number") raw.total_videos = eps.length * snapshot.cameraKeys.length;
+      // Update splits to reflect new episode count.
+      if (raw.splits && typeof raw.splits === "object") {
+        const newSplits: Record<string, string> = {};
+        for (const [name, range] of Object.entries(raw.splits as Record<string, unknown>)) {
+          if (typeof range === "string" && /^\d+:\d+$/.test(range)) {
+            newSplits[name] = `0:${eps.length}`;
+          }
+        }
+        if (Object.keys(newSplits).length > 0) raw.splits = newSplits;
+      }
       await fs.writeFile(infoPath, JSON.stringify(raw, null, 2), "utf8");
     }
   }

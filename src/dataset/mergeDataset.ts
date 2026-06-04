@@ -16,6 +16,16 @@ import {
   writeJsonl,
 } from "./adapters/util";
 import { writeStatsJsonl } from "./statsJson";
+import { buildParquetSchema } from "./parquetSchema";
+
+// Lazy imports — hyparquet (ESM), parquetjs (CJS).
+let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
+function getHyparquet() {
+  return (hyparquetPromise ??= import("hyparquet"));
+}
+function getParquetjs(): any {
+  return require("parquetjs");
+}
 
 // ---- public API ----
 
@@ -74,7 +84,7 @@ export async function mergeDatasets(
     const srcSnapshot = ep._srcSnapshot!;
     const srcEp = ep._srcEpisode!;
 
-    // ---- data parquet ----
+    // ---- data parquet (rewrite with correct episode_index) ----
     const srcDataPath = resolveSourceDataPath(srcSnapshot, srcEp);
     if (srcDataPath && (await exists(srcDataPath))) {
       const dstDataRel = buildDataPath({
@@ -86,7 +96,7 @@ export async function mergeDatasets(
       const dstDataPath = path.join(targetRoot, dstDataRel);
       onProgress({ done, total, current: `Copying parquet for episode ${ep.episodeIndex}` });
       await fs.mkdir(path.dirname(dstDataPath), { recursive: true });
-      await fs.cp(srcDataPath, dstDataPath);
+      await copyParquetWithEpisodeIndex(srcDataPath, dstDataPath, ep.episodeIndex);
     }
 
     // ---- video files ----
@@ -116,6 +126,7 @@ export async function mergeDatasets(
   const info: Record<string, unknown> = {
     ...firstInfo.raw,
     codebase_version: firstInfo.codebaseVersion ?? "v2.1",
+    splits: { train: `0:${total}` },
     fps,
     total_episodes: total,
     total_frames: totalFrames,
@@ -349,9 +360,11 @@ function normalizeStatsFields(records: Record<string, unknown>[]): string[] {
     // Group by feature: featureKey → Set of field names to drop.
     const byFeature = new Map<string, Set<string>>();
     for (const d of dropped) {
-      const parts = d.split(".");
-      const fk = parts[0];
-      const field = parts.slice(1).join(".");
+      // Feature keys may contain dots (e.g. "observation.images.cam_high").
+      // Split on the LAST dot to separate feature key from field name.
+      const lastDot = d.lastIndexOf(".");
+      const fk = d.slice(0, lastDot);
+      const field = d.slice(lastDot + 1);
       if (!byFeature.has(fk)) byFeature.set(fk, new Set());
       byFeature.get(fk)!.add(field);
     }
@@ -373,18 +386,24 @@ function normalizeStatsFields(records: Record<string, unknown>[]): string[] {
       // count should always be an integer array.
       if ("count" in f && f.count !== null) {
         const arr = Array.isArray(f.count) ? f.count : [f.count];
-        f.count = arr.map((v: number) => Math.round(v));
+        f.count = mapLeaves(arr, (v: unknown) => Math.round(Number(v)));
       }
       // Ensure all numeric arrays are plain numbers (no BigInt, no mixed types).
+      // Use recursive mapLeaves to preserve video stats' 3-level [[[r]],[[g]],[[b]]] shape.
       for (const k of ["min", "max", "mean", "std", "q01", "q10", "q50", "q90", "q99"]) {
         if (k in f && f[k] !== null && Array.isArray(f[k])) {
-          f[k] = (f[k] as number[]).map((v) => Number(v));
+          f[k] = mapLeaves(f[k] as unknown[], (v: unknown) => Number(v));
         }
       }
     }
   }
 
   return dropped;
+}
+
+/** Recursively apply `fn` to every leaf (non-array) value in a nested array. */
+function mapLeaves(arr: unknown[], fn: (v: unknown) => unknown): unknown[] {
+  return arr.map((v) => (Array.isArray(v) ? mapLeaves(v as unknown[], fn) : fn(v)));
 }
 
 // ---- task merging ----
@@ -410,6 +429,44 @@ function unionCameraKeys(snapshots: DatasetSnapshot[]): string[] {
     for (const k of s.cameraKeys) keys.add(k);
   }
   return [...keys].sort();
+}
+
+/**
+ * Copy a v2.x per-episode parquet file, rewriting every row's `episode_index`
+ * to `newIndex`.  Without this, merged datasets reuse the old internal
+ * episode_index values, causing duplicates (two files with ep_index=0) and
+ * missing episodes (no file with ep_index=60).
+ */
+async function copyParquetWithEpisodeIndex(
+  srcPath: string,
+  dstPath: string,
+  newIndex: number,
+): Promise<void> {
+  try {
+    const { parquetReadObjects, asyncBufferFromFile } = await getHyparquet();
+    const pjs = getParquetjs();
+
+    const buffer = await asyncBufferFromFile(srcPath);
+    const rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
+
+    // Update episode_index and convert BigInt to Number.
+    for (const r of rows) {
+      r.episode_index = newIndex;
+      for (const [k, v] of Object.entries(r)) {
+        if (typeof v === "bigint") (r as any)[k] = Number(v);
+      }
+    }
+
+    // Preserve original schema types via buildParquetSchema.
+    const schemaFields = buildParquetSchema(rows[0]);
+    const schema = new pjs.ParquetSchema(schemaFields);
+    const writer = await pjs.ParquetWriter.openFile(schema, dstPath, { compression: "UNCOMPRESSED" });
+    for (const row of rows) await writer.appendRow(row);
+    await writer.close();
+  } catch {
+    // Fallback: plain copy if the source isn't a valid parquet file.
+    await fs.cp(srcPath, dstPath);
+  }
 }
 
 // ---- feature merging ----

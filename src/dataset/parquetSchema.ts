@@ -4,11 +4,11 @@
 // causing type mismatches when concatenating with original parquet files.
 
 const INTERNAL_TYPES: Record<string, string> = {
-  episode_index: "DOUBLE",
-  frame_index: "DOUBLE",
+  episode_index: "INT64",
+  frame_index: "INT64",
   timestamp: "DOUBLE",
-  index: "DOUBLE",
-  task_index: "DOUBLE",
+  index: "INT64",
+  task_index: "INT64",
 };
 
 export function buildParquetSchema(
@@ -23,7 +23,8 @@ export function buildParquetSchema(
     if (Array.isArray(value)) {
       const elemType = knownType ?? (feat ? dtypeToParquet(feat.dtype) : "DOUBLE");
       fields[key] = { type: elemType, repeated: true };
-    } else if (typeof value === "number") {
+    } else if (typeof value === "number" || typeof value === "bigint") {
+      // hyparquet returns BigInt for INT64 columns; treat as numeric.
       fields[key] = { type: knownType ?? (feat ? dtypeToParquet(feat.dtype) : "DOUBLE") };
     } else if (typeof value === "boolean") {
       fields[key] = { type: "BOOLEAN" };

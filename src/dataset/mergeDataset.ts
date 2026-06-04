@@ -223,7 +223,7 @@ async function validateParquetSchemas(snapshots: DatasetSnapshot[]): Promise<voi
     const s = sources[i];
     for (const [col, baseType] of Object.entries(base.types)) {
       const sType = s.types[col];
-      if (sType && sType !== baseType) {
+      if (sType && !typesCompatible(baseType, sType)) {
         throw new Error(
           `Parquet type mismatch for column "${col}": ` +
           `"${base.name}" has ${baseType}, "${s.name}" has ${sType}. ` +
@@ -232,6 +232,27 @@ async function validateParquetSchemas(snapshots: DatasetSnapshot[]): Promise<voi
       }
     }
   }
+}
+
+/**
+ * Two parquet column types are compatible when they represent the same
+ * logical data.  `number` (hyparquet reads DOUBLE columns as JS number)
+ * and `int64` (hyparquet reads INT64 columns as BigInt) are both numeric
+ * — the physical storage differs but the values are interoperable.
+ * List element types are also compared loosely for the same reason.
+ */
+function typesCompatible(a: string, b: string): boolean {
+  if (a === b) return true;
+  // Normalize numeric representations.
+  const numeric = new Set(["number", "int64"]);
+  if (numeric.has(a) && numeric.has(b)) return true;
+  // Normalize list element types (e.g. list<number> vs list<int64>).
+  const listMatchA = a.match(/^list<(.+)>$/);
+  const listMatchB = b.match(/^list<(.+)>$/);
+  if (listMatchA && listMatchB) {
+    return typesCompatible(listMatchA[1], listMatchB[1]);
+  }
+  return false;
 }
 
 function validateCompatibility(snapshots: DatasetSnapshot[]): void {

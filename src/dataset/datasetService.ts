@@ -18,6 +18,8 @@ import type { DatasetDescriptor, DatasetSnapshot, LeRobotEpisode, SshTarget } fr
 import { ensureHuggingFaceDataset } from "./huggingface";
 import { isLeRobotDataset, loadDataset } from "./datasetLoader";
 import { detectDatasetVersion } from "./DatasetVersionDetector";
+import { writeStatsJsonl } from "./statsJson";
+import { buildParquetSchema } from "./parquetSchema";
 import { getAdapter } from "./adapters";
 import type { TaskInfo } from "../types";
 import {
@@ -496,7 +498,7 @@ export class DatasetService implements vscode.Disposable {
         .map((l) => JSON.parse(l) as Record<string, unknown>)
         .filter((s) => s.episode_index !== deletedIdx);
       statsLines = statsLines.map((s, i) => ({ ...s, episode_index: i }));
-      await writeJsonl(statsPath, statsLines);
+      await writeStatsJsonl(statsPath, statsLines);
     }
 
     // 4. Update info.json totals.
@@ -522,18 +524,11 @@ export class DatasetService implements vscode.Disposable {
       // Update episode_index in every row.
       for (const r of rows) r.episode_index = newIndex;
 
-      // Build schema from first row (preserve types).
-      const first = rows[0];
-      const schemaFields: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(first)) {
-        if (v === null || v === undefined) continue;
-        const isArr = Array.isArray(v);
-        const sample = isArr ? (v as unknown[])[0] : v;
-        const t = typeof sample === "number"
-          ? (Number.isInteger(sample) ? "INT64" : "DOUBLE")
-          : typeof sample === "boolean" ? "BOOLEAN" : "UTF8";
-        schemaFields[k] = isArr ? { type: t, repeated: true } : { type: t };
-      }
+      // Use buildParquetSchema to preserve correct column types
+      // (INTERNAL_TYPES maps timestamp→DOUBLE, episode_index→INT64, etc.).
+      // A custom schema inference here would misclassify timestamp:0 as
+      // INT64 and truncate all fractional values to integers.
+      const schemaFields = buildParquetSchema(rows[0]);
       const schema = new pjs.ParquetSchema(schemaFields);
 
       const tmpPath = parquetPath + ".tmp";

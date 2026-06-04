@@ -77,7 +77,7 @@ export async function convertV21ToV30(
   await writeBoundaryParquet(targetRoot, sorted, dataBoundaries, videoBoundaries, tasks);
 
   // ---- Write info.json ----
-  const v30Info = buildV30Info(info, total, cameraKeys, chunksSize);
+  const v30Info = buildV30Info(info, total, cameraKeys, chunksSize, tasks.length);
   await fs.writeFile(path.join(targetRoot, "meta", "info.json"), JSON.stringify(v30Info, null, 2), "utf8");
 
   // ---- Convert per-episode stats to global stats.json for v3.0 ----
@@ -150,12 +150,6 @@ async function buildDataShards(
       shardRows = [];
       fileIndex++;
       rowOffset = 0;
-      // Update boundaries for this shard's episodes to reflect new fileIndex.
-      for (let j = boundaries.length - 1; j >= 0 && boundaries[j].fileIndex === fileIndex - 1; j--) {
-        // Already correct.
-      }
-      // Actually, the boundaries for episodes that were flushed need their fileIndex updated.
-      // Episodes in this shard have their current fileIndex. Let's track differently.
     }
 
     onProgress({ done: i + 1, total: episodes.length, current: `Data: ep ${ep.episodeIndex}` });
@@ -293,14 +287,20 @@ async function writeBoundaryParquet(
 
 // ---- helpers ----
 
-function buildV30Info(info: LeRobotInfo, totalEpisodes: number, cameraKeys: string[], chunksSize: number): Record<string, unknown> {
+function buildV30Info(
+  info: LeRobotInfo,
+  totalEpisodes: number,
+  cameraKeys: string[],
+  chunksSize: number,
+  totalTasks: number,
+): Record<string, unknown> {
   return {
     codebase_version: "v3.0",
     robot_type: info.robotType ?? "unknown",
     fps: info.fps,
     total_episodes: totalEpisodes,
     total_frames: info.totalFrames,
-    total_tasks: 0,
+    total_tasks: totalTasks,
     total_videos: totalEpisodes * cameraKeys.length,
     total_chunks: Math.ceil(totalEpisodes / chunksSize),
     chunks_size: chunksSize,
@@ -344,7 +344,13 @@ async function writeEpisodesParquet(dstRoot: string, records: Record<string, unk
     if (Array.isArray(value)) {
       schemaFields[key] = { type: "UTF8", repeated: true };
     } else if (typeof value === "number") {
-      schemaFields[key] = { type: Number.isInteger(value) ? "INT64" : "DOUBLE" };
+      // Timestamp columns are always DOUBLE even when the first episode's
+      // from_timestamp happens to be exactly 0.
+      if (key.endsWith("_timestamp")) {
+        schemaFields[key] = { type: "DOUBLE" };
+      } else {
+        schemaFields[key] = { type: Number.isInteger(value) ? "INT64" : "DOUBLE" };
+      }
     } else if (typeof value === "string") {
       schemaFields[key] = { type: "UTF8" };
     }

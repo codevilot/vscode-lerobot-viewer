@@ -4,7 +4,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { V21Adapter } from "./adapters/V21Adapter";
-import { exists, readJson, readJsonlIfExists, writeJsonl } from "./adapters/util";
+import { exists, readJson, readJsonlIfExists } from "./adapters/util";
+import { writeStatsJsonl } from "./statsJson";
 import { buildParquetSchema } from "./parquetSchema";
 
 let hyparquetPromise: Promise<typeof import("hyparquet")> | undefined;
@@ -94,7 +95,7 @@ async function renameInStats(root: string, oldKey: string, newKey: string): Prom
         const s = (rec.stats ?? rec) as Record<string, unknown>;
         if (oldKey in s) { s[newKey] = s[oldKey]; delete s[oldKey]; }
       }
-      await writeJsonl(epStatsPath, oldStats);
+      await writeStatsJsonl(epStatsPath, oldStats);
     }
   }
   const statsPath = path.join(root, "meta", "stats.json");

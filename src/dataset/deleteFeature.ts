@@ -48,16 +48,24 @@ export async function deleteFeature(
     "utf8",
   );
 
-  // 2. Delete video files (cameras only).
+  // 2. Delete video files + clean up empty directories.
   if (isVideo) {
     const total = episodes.length;
+    const cleanedDirs = new Set<string>();
     for (let i = 0; i < episodes.length; i++) {
       const ep = episodes[i];
       const videoPaths = await findVideoFiles(root, info, ep, featureKey);
       for (const vp of videoPaths) {
-        try { await fs.unlink(vp); } catch { /* ok */ }
+        try {
+          await fs.unlink(vp);
+          cleanedDirs.add(path.dirname(vp));
+        } catch { /* file may already be gone */ }
       }
       onProgress({ done: i + 1, total });
+    }
+    // Remove empty per-video-feature directories (and their parents if empty).
+    for (const dir of cleanedDirs) {
+      await removeEmptyDirs(dir, path.join(root, "videos"));
     }
   } else {
     // 3. Rewrite parquet files (remove column for matrix/scalar features).
@@ -90,24 +98,62 @@ export async function deleteFeature(
   await removeFromStats(root, featureKey);
 }
 
+/** Recursively remove `dir` and its empty ancestors up to (but not including) `stopDir`. */
+async function removeEmptyDirs(dir: string, stopDir: string): Promise<void> {
+  let current = dir;
+  while (current !== stopDir) {
+    try {
+      const entries = await fs.readdir(current);
+      if (entries.length === 0) {
+        await fs.rmdir(current);
+      } else {
+        break;
+      }
+    } catch {
+      break;
+    }
+    current = path.dirname(current);
+  }
+}
+
+const VIDEO_EXTENSIONS = [".mp4", ".avi", ".mkv", ".mov", ".webm"];
+
 async function findVideoFiles(
   root: string,
   info: import("../../types").LeRobotInfo,
   episode: import("../../types").LeRobotEpisode,
   videoKey: string,
 ): Promise<string[]> {
-  // Try multiple chunk sizes and layouts to find the video file.
   const chunksSize = info.chunksSize ?? 1000;
   const chunkIdx = Math.floor(episode.episodeIndex / chunksSize);
-  const templates = [
-    info.videoPath ?? "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
-  ];
+  const baseTpl = info.videoPath ?? "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4";
   const out: string[] = [];
-  for (const tpl of templates) {
+
+  // Try each supported extension against the template.
+  for (const ext of VIDEO_EXTENSIONS) {
+    const tpl = baseTpl.replace(/\.\w+$/, ext);
     const rel = buildVideoPath({ template: tpl, chunkIndex: chunkIdx, fileIndex: 0, episodeIndex: episode.episodeIndex, videoKey });
     const abs = path.join(root, rel);
     if (await exists(abs)) out.push(abs);
   }
+
+  // Fallback: if the directory exists, scan for any video files in it.
+  if (out.length === 0) {
+    const dirRel = buildVideoPath({ template: baseTpl, chunkIndex: chunkIdx, fileIndex: 0, episodeIndex: episode.episodeIndex, videoKey });
+    const dir = path.dirname(path.join(root, dirRel));
+    try {
+      const entries = await fs.readdir(dir);
+      for (const entry of entries) {
+        if (entry.startsWith("episode_") || entry.startsWith("file-")) {
+          const full = path.join(dir, entry);
+          if (VIDEO_EXTENSIONS.some((e) => entry.endsWith(e))) {
+            out.push(full);
+          }
+        }
+      }
+    } catch { /* dir may not exist */ }
+  }
+
   return out;
 }
 
@@ -117,7 +163,12 @@ async function removeFromStats(root: string, featureKey: string): Promise<void> 
     try {
       const text = await fs.readFile(epStatsPath, "utf8");
       const lines = text.trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
-      for (const line of lines) delete line[featureKey];
+      for (const line of lines) {
+        // Feature keys may be at top level or nested under "stats".
+        delete line[featureKey];
+        const stats = line.stats as Record<string, unknown> | undefined;
+        if (stats) delete stats[featureKey];
+      }
       await writeStatsJsonl(epStatsPath, lines);
     } catch { /* ok */ }
   }

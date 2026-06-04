@@ -154,7 +154,7 @@ function sanitizeRow(row: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-/** Compute per-episode min/max/mean/std for each numeric column. */
+/** Compute per-episode stats (min/max/mean/std/quantiles) for each numeric column. */
 function computeEpStats(rows: Record<string, unknown>[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (rows.length === 0) return out;
@@ -175,9 +175,12 @@ function computeEpStats(rows: Record<string, unknown>[]): Record<string, unknown
     const means = new Array(n).fill(0);
     const m2s = new Array(n).fill(0);
     const count = flat.length;
+    // Collect all values per dimension for quantile computation.
+    const allValues: number[][] = Array.from({ length: n }, () => []);
     for (let i = 0; i < count; i++) {
       for (let j = 0; j < n; j++) {
         const x = flat[i][j];
+        allValues[j].push(x);
         if (x < mins[j]) mins[j] = x;
         if (x > maxs[j]) maxs[j] = x;
         const delta = x - means[j];
@@ -186,15 +189,32 @@ function computeEpStats(rows: Record<string, unknown>[]): Record<string, unknown
         m2s[j] += delta * delta2;
       }
     }
+    // Sort once per dimension, then compute all quantiles.
+    for (let j = 0; j < n; j++) allValues[j].sort((a, b) => a - b);
+    const q01 = allValues.map((v) => quantileFromSorted(v, 0.01));
+    const q10 = allValues.map((v) => quantileFromSorted(v, 0.10));
+    const q50 = allValues.map((v) => quantileFromSorted(v, 0.50));
+    const q90 = allValues.map((v) => quantileFromSorted(v, 0.90));
+    const q99 = allValues.map((v) => quantileFromSorted(v, 0.99));
     out[key] = {
       min: mins,
       max: maxs,
       mean: means,
       std: m2s.map((m2) => Math.sqrt(m2 / count)),
+      q01, q10, q50, q90, q99,
       count: [count],
     };
   }
   return out;
+}
+
+function quantileFromSorted(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  const pos = q * (sorted.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] * (hi - pos) + sorted[hi] * (pos - lo);
 }
 
 

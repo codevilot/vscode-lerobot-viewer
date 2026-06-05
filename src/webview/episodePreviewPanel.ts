@@ -77,14 +77,31 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
   private datasetId: string;
   private descriptor: { id: string; name: string; root?: string };
   private _initialized = false;
+  /** Video file paths currently served via HTTP servers — stopped on switch. */
+  private _servedVideoPaths: string[] = [];
 
 
-  /** Update the panel to show a different episode (same dataset). */
+  /** Update the panel to show a different episode (same or different dataset). */
   setEpisode(descriptor: { id: string; name: string; root?: string }, episode: LeRobotEpisode): void {
+    const datasetChanged = this.descriptor?.root !== descriptor.root;
     this.datasetId = descriptor.id;
     this.descriptor = descriptor;
     this.episode = episode;
     this.panel.title = `${descriptor.name} · Episode ${episode.episodeIndex}`;
+
+    // When switching to a different dataset, update localResourceRoots so
+    // the webview can access video files from the new dataset's directory.
+    if (datasetChanged && descriptor.root) {
+      this.panel.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [
+          vscode.Uri.joinPath(this.context.extensionUri, "dist"),
+          vscode.Uri.joinPath(this.context.extensionUri, "media"),
+          vscode.Uri.file(descriptor.root),
+        ],
+      };
+    }
+
     // Trigger the webview to reload with new episode data.
     void this.refreshPreview();
   }
@@ -99,6 +116,12 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
     } catch (err) {
       logError("refreshPreview", err);
     }
+  }
+
+  override dispose(): void {
+    for (const p of this._servedVideoPaths) stopServeVideo(p);
+    this._servedVideoPaths = [];
+    super.dispose();
   }
 
   protected override extraCspDirectives(): Array<[string, string]> {
@@ -130,6 +153,10 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
   }
 
   private async buildMeta(snapshot: Awaited<ReturnType<DatasetService["getSnapshot"]>>) {
+    // Stop video servers from the previous episode to free ports.
+    for (const p of this._servedVideoPaths) stopServeVideo(p);
+    this._servedVideoPaths = [];
+
     const cameras = await Promise.all(
       snapshot.cameraKeys.map(async (key) => {
         const resolved = await resolveVideoUri(snapshot, this.episode, key);
@@ -143,6 +170,7 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
         if (useStreaming) {
           try {
             videoUri = await serveVideo(resolved.uri.fsPath);
+            this._servedVideoPaths.push(resolved.uri.fsPath);
           } catch {
             videoUri = this.panel.webview.asWebviewUri(resolved.uri).toString();
           }

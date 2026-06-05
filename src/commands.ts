@@ -8,7 +8,6 @@ import * as vscode from "vscode";
 import type { DatasetService } from "./dataset/datasetService";
 import type { DatasetTreeProvider, EpisodeNode, DatasetNode } from "./providers/datasetTreeProvider";
 import type { EpisodePreviewPanelManager } from "./webview/episodePreviewPanel";
-import type { MetadataViewerPanelManager } from "./webview/metadataViewerPanel";
 import { isValidRepoId } from "./dataset/huggingface";
 import { log, logError } from "./log";
 import {
@@ -63,7 +62,6 @@ export function registerCommands(
   context: vscode.ExtensionContext,
   service: DatasetService,
   previews: EpisodePreviewPanelManager,
-  metadataViewer: MetadataViewerPanelManager,
   tree: DatasetTreeProvider,
   treeView: vscode.TreeView<unknown>,
 ): void {
@@ -177,7 +175,7 @@ export function registerCommands(
       if (!pick) return;
       datasetId = pick.id;
     }
-    await metadataViewer.show(datasetId);
+    await previews.showMetadata(datasetId);
   });
 
   reg(CommandIds.previewEpisode, async (...args: unknown[]) => {

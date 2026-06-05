@@ -8,7 +8,6 @@ import { DatasetService } from "./dataset/datasetService";
 import { disposeSshPool } from "./dataset/ssh/pool";
 import { DatasetTreeProvider } from "./providers/datasetTreeProvider";
 import { EpisodePreviewPanelManager } from "./webview/episodePreviewPanel";
-import { MetadataViewerPanelManager } from "./webview/metadataViewerPanel";
 import { getLogger, log } from "./log";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -34,10 +33,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const previews = new EpisodePreviewPanelManager(context, service);
   context.subscriptions.push(previews);
 
-  const metadataViewer = new MetadataViewerPanelManager(context, service);
-  context.subscriptions.push(metadataViewer);
-
-  registerCommands(context, service, previews, metadataViewer, tree, treeView);
+  registerCommands(context, service, previews, tree, treeView);
 
   // Refresh the tree whenever workspace folders change so freshly-opened
   // folders get scanned.

@@ -9,7 +9,7 @@ import { readEpisodeSignals } from "../dataset/parquetReader";
 import { log, logError } from "../log";
 import { launchRerun } from "../rerun/rerunLauncher";
 import { serveVideo, stopServeVideo } from "./videoServer";
-import type { LeRobotEpisode } from "../types";
+import type { DatasetMetadataView, LeRobotEpisode } from "../types";
 import { BaseWebviewPanel } from "./baseWebviewPanel";
 import type { FromWebviewMessage } from "./protocol";
 
@@ -40,7 +40,6 @@ export class EpisodePreviewPanelManager implements vscode.Disposable {
     }
 
     if (this.panel) {
-      // Reuse existing panel — update and reveal.
       this.panel.setEpisode(snapshot.descriptor, episode);
       this.panel.reveal();
     } else {
@@ -48,6 +47,36 @@ export class EpisodePreviewPanelManager implements vscode.Disposable {
         this.context, this.service, snapshot.descriptor, episode,
       );
       this.panel.onDidDispose(() => { this.panel = undefined; });
+    }
+  }
+
+  /** Show dataset metadata in the shared preview panel. */
+  async showMetadata(datasetId: string): Promise<void> {
+    let snapshot;
+    try {
+      snapshot = await this.service.getSnapshot(datasetId);
+    } catch (err) {
+      logError(`opening metadata for ${datasetId}`, err);
+      vscode.window.showErrorMessage(`Could not load dataset: ${(err as Error).message}`);
+      return;
+    }
+    const metadata = buildMetadataView(snapshot);
+
+    if (this.panel) {
+      this.panel.setDataset(snapshot.descriptor);
+      this.panel.post({ type: "init-metadata", data: metadata });
+      this.panel.reveal();
+    } else {
+      const ep = snapshot.episodes[0];
+      if (!ep) {
+        vscode.window.showErrorMessage("Dataset has no episodes to preview.");
+        return;
+      }
+      this.panel = new EpisodePreviewPanel(
+        this.context, this.service, snapshot.descriptor, ep, true, // metadataMode
+      );
+      this.panel.onDidDispose(() => { this.panel = undefined; });
+      this.panel.post({ type: "init-metadata", data: metadata });
     }
   }
 
@@ -63,6 +92,7 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
     private readonly service: DatasetService,
     descriptor: { id: string; name: string; root?: string },
     private episode: LeRobotEpisode,
+    private _metadataMode = false,
   ) {
     super({
       context,
@@ -81,8 +111,27 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
   private _servedVideoPaths: string[] = [];
 
 
+  /** Update the dataset descriptor without changing the episode (for metadata view). */
+  setDataset(descriptor: { id: string; name: string; root?: string }): void {
+    const datasetChanged = this.descriptor?.root !== descriptor.root;
+    this.datasetId = descriptor.id;
+    this.descriptor = descriptor;
+    this.panel.title = `${descriptor.name}`;
+    if (datasetChanged && descriptor.root) {
+      this.panel.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [
+          vscode.Uri.joinPath(this.context.extensionUri, "dist"),
+          vscode.Uri.joinPath(this.context.extensionUri, "media"),
+          vscode.Uri.file(descriptor.root),
+        ],
+      };
+    }
+  }
+
   /** Update the panel to show a different episode (same or different dataset). */
   setEpisode(descriptor: { id: string; name: string; root?: string }, episode: LeRobotEpisode): void {
+    this._metadataMode = false;
     const datasetChanged = this.descriptor?.root !== descriptor.root;
     this.datasetId = descriptor.id;
     this.descriptor = descriptor;
@@ -133,7 +182,7 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
       case "ready": {
         if (!this._initialized) {
           this._initialized = true;
-          await this.refreshPreview();
+          if (!this._metadataMode) await this.refreshPreview();
         }
         return;
       }
@@ -263,4 +312,30 @@ function pickSplitForEpisode(
     if (episodeIndex >= from && episodeIndex < to) return name;
   }
   return undefined;
+}
+
+function buildMetadataView(
+  snapshot: Awaited<ReturnType<DatasetService["getSnapshot"]>>,
+): DatasetMetadataView {
+  return {
+    descriptor: snapshot.descriptor,
+    version: snapshot.version,
+    info: snapshot.info,
+    cameraKeys: snapshot.cameraKeys,
+    stateKeys: snapshot.stateKeys,
+    actionKeys: snapshot.actionKeys,
+    velocityKeys: snapshot.velocityKeys,
+    effortKeys: snapshot.effortKeys,
+    environmentStateKeys: snapshot.environmentStateKeys,
+    rewardKey: snapshot.rewardKey,
+    doneKey: snapshot.doneKey,
+    successKey: snapshot.successKey,
+    truncatedKey: snapshot.truncatedKey,
+    taskIndexKey: snapshot.taskIndexKey,
+    tasks: snapshot.tasks,
+    stats: snapshot.stats,
+    splits: snapshot.splits,
+    episodeLengths: snapshot.episodes.map((e) => e.length || 0),
+    warnings: snapshot.warnings,
+  };
 }

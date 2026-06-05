@@ -202,6 +202,44 @@ export class DatasetService implements vscode.Disposable {
     }
   }
 
+  /**
+   * Rename a local dataset folder on disk and update the descriptor.
+   * Returns the updated descriptor, or undefined on failure.
+   */
+  async renameDataset(id: string, newName: string): Promise<DatasetDescriptor | undefined> {
+    const descriptor = this.get(id);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showErrorMessage("Only local datasets can be renamed.");
+      return undefined;
+    }
+    const oldPath = descriptor.root;
+    const parentDir = path.dirname(oldPath);
+    const newPath = path.join(parentDir, newName);
+
+    if (oldPath === newPath) return descriptor;
+    if (await exists(newPath)) {
+      void vscode.window.showErrorMessage(`A folder named "${newName}" already exists in ${parentDir}.`);
+      return undefined;
+    }
+
+    try {
+      await fs.rename(oldPath, newPath);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Failed to rename folder: ${(err as Error).message}`);
+      return undefined;
+    }
+
+    // Remove old entry and add updated one (id changes with the path).
+    this.descriptors = this.descriptors.filter((d) => d.id !== id);
+    const updated: DatasetDescriptor = {
+      ...descriptor,
+      id: `local:${newPath}`,
+      name: newName,
+      root: newPath,
+    };
+    return this.upsert(updated);
+  }
+
   remove(id: string): void {
     const before = this.descriptors.length;
     const removed = this.descriptors.find((d) => d.id === id);

@@ -26,7 +26,6 @@ import { deleteFeature } from "./dataset/deleteFeature";
 import { recomputeStats } from "./dataset/computeStats";
 import { renameFeature } from "./dataset/renameFeature";
 import { convertV21ToV30 } from "./dataset/convertV21ToV30";
-import { fixEpisodeIndex } from "./dataset/fixEpisodeIndex";
 import type { SshTarget } from "./types";
 
 export const CommandIds = {
@@ -52,7 +51,7 @@ export const CommandIds = {
   recomputeStats: "lerobotViewer.recomputeStats",
   renameFeature: "lerobotViewer.renameFeature",
   convertToV30: "lerobotViewer.convertToV30",
-  fixEpisodeIndex: "lerobotViewer.fixEpisodeIndex",
+  renameDataset: "lerobotViewer.renameDataset",
 } as const;
 
 interface PreviewArgs {
@@ -775,32 +774,6 @@ export function registerCommands(
     }
   });
 
-  reg(CommandIds.fixEpisodeIndex, async (...args: unknown[]) => {
-    const arg = args[0];
-    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
-    if (!datasetId) return;
-    const descriptor = service.get(datasetId);
-    if (!descriptor || !descriptor.root || descriptor.source === "ssh") return;
-    let snapshot;
-    try { snapshot = await service.getSnapshot(datasetId); } catch { return; }
-    if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1") return;
-
-    try {
-      let result = 0;
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Fixing episode_index", cancellable: false },
-        async (progress) => {
-          result = await fixEpisodeIndex(descriptor.root!, (p) =>
-            progress.report({ message: `${p.done}/${p.total}` }),
-          );
-        },
-      );
-      service.invalidate(datasetId);
-      void vscode.window.showInformationMessage(`Fixed ${result} episode parquet files.`);
-    } catch (err) {
-      void vscode.window.showErrorMessage(`Failed: ${(err as Error).message}`);
-    }
-  });
 
   reg(CommandIds.deleteEpisode, async (...args: unknown[]) => {
     // Inline click passes the EpisodeNode as args[0]; context menu uses selection.
@@ -848,6 +821,26 @@ export function registerCommands(
         `Deleted ${deleted}/${indices.length} episodes. Last error: ${lastErr}`,
       );
     }
+  });
+
+  reg(CommandIds.renameDataset, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) return;
+    const descriptor = service.get(datasetId);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Only local datasets can be renamed.");
+      return;
+    }
+    const newName = await vscode.window.showInputBox({
+      prompt: "New folder name for the dataset",
+      value: descriptor.name,
+      validateInput: (v) =>
+        !v.trim() ? "Name cannot be empty" :
+        /[<>:"/\\|?*]/.test(v) ? "Name contains invalid characters" : undefined,
+    });
+    if (!newName || newName === descriptor.name) return;
+    await service.renameDataset(datasetId, newName.trim());
   });
 
   reg(CommandIds.revealInExplorer, async (...args: unknown[]) => {

@@ -172,9 +172,9 @@
         "icon": "$(export)"
       },
       {
-        "command": "lerobotViewer.fixEpisodeIndex",
-        "title": "LeRobot: Fix Episode Index",
-        "icon": "$(sync)"
+        "command": "lerobotViewer.renameDataset",
+        "title": "LeRobot: Rename Dataset",
+        "icon": "$(edit)"
       }
     ],
     "menus": {
@@ -277,7 +277,7 @@
           "group": "1_modify@7"
         },
         {
-          "command": "lerobotViewer.fixEpisodeIndex",
+          "command": "lerobotViewer.renameDataset",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@8"
         },
@@ -343,10 +343,6 @@
         },
         {
           "command": "lerobotViewer.convertToV30",
-          "when": "false"
-        },
-        {
-          "command": "lerobotViewer.fixEpisodeIndex",
           "when": "false"
         }
       ]

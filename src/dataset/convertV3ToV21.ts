@@ -217,6 +217,26 @@ export async function convertV3ToV21(
   }));
   await writeJsonl(path.join(targetRoot, "meta", "tasks.jsonl"), taskRecords);
 
+  // Copy video feature stats from v3.0 global stats.json into each episode's stats.
+  const v30StatsPath = path.join(sourceRoot, "meta", "stats.json");
+  if (await exists(v30StatsPath)) {
+    try {
+      const v30Stats = JSON.parse(await fs.readFile(v30StatsPath, "utf8")) as Record<string, unknown>;
+      const videoKeys = Object.keys(info.features).filter(
+        (k) => info.features[k]?.dtype === "video",
+      );
+      for (const vk of videoKeys) {
+        const featStats = v30Stats[vk] as Record<string, unknown> | undefined;
+        if (featStats) {
+          for (const rec of epStatsRecords) {
+            const statsObj = (rec as Record<string, unknown>).stats as Record<string, unknown>;
+            if (statsObj) statsObj[vk] = featStats;
+          }
+        }
+      }
+    } catch { /* stats.json may not exist or be unreadable */ }
+  }
+
   // Write per-episode stats (v2.1 canonical format).
   await writeStatsJsonl(
     path.join(targetRoot, "meta", "episodes_stats.jsonl"),
@@ -296,8 +316,8 @@ function buildCanonicalSchema(info: LeRobotInfo, sampleRow: Record<string, unkno
 
   // Fixed-type internal columns.
   const INTERNAL: Record<string, string> = {
-    episode_index: "DOUBLE", frame_index: "DOUBLE", timestamp: "DOUBLE",
-    index: "DOUBLE", task_index: "DOUBLE",
+    episode_index: "INT64", frame_index: "INT64", timestamp: "DOUBLE",
+    index: "INT64", task_index: "INT64",
   };
 
   // Feature columns from info.json (derive type and repeated from features).
@@ -454,6 +474,8 @@ class StatsAccumulator {
   private m2s = new Map<string, number[]>();
   // key → count of rows seen
   private counts = new Map<string, number>();
+  // key → per-dimension value arrays for quantile computation.
+  private values = new Map<string, number[][]>();
 
   /** Feed a batch of sanitized rows into the accumulator. */
   ingest(rows: Record<string, unknown>[]): void {
@@ -468,10 +490,10 @@ class StatsAccumulator {
           this.lengths.set(key, n);
           this.mins.set(key, [...arr]);
           this.maxs.set(key, [...arr]);
-          // Start mean at 0; Welford converges from there.
           this.means.set(key, new Array(n).fill(0));
           this.m2s.set(key, new Array(n).fill(0));
           this.counts.set(key, 0);
+          this.values.set(key, Array.from({ length: n }, () => []));
         }
 
         const count = this.counts.get(key)! + 1;
@@ -481,13 +503,13 @@ class StatsAccumulator {
         const maxs = this.maxs.get(key)!;
         const means = this.means.get(key)!;
         const m2s = this.m2s.get(key)!;
+        const vals = this.values.get(key)!;
 
         for (let i = 0; i < n; i++) {
           const x = arr[i];
+          vals[i].push(x);
           if (x < mins[i]) mins[i] = x;
           if (x > maxs[i]) maxs[i] = x;
-
-          // Welford online algorithm (numerically stable).
           const delta = x - means[i];
           means[i] += delta / count;
           const delta2 = x - means[i];
@@ -495,10 +517,6 @@ class StatsAccumulator {
         }
       }
     }
-  }
-
-  hasData(): boolean {
-    return this.counts.size > 0;
   }
 
   /**
@@ -511,17 +529,35 @@ class StatsAccumulator {
       const count = this.counts.get(pk)!;
       const mean = this.means.get(pk)!;
       const std = this.m2s.get(pk)!.map((m2) => Math.sqrt(m2 / count));
+      const vals = this.values.get(pk)!;
+      // Pre-sort each dimension once, compute all quantiles from sorted arrays.
+      const sorted = vals.map((v) => v.slice().sort((a, b) => a - b));
+      const q01 = sorted.map((s) => quantileFromSorted(s, 0.01));
+      const q10 = sorted.map((s) => quantileFromSorted(s, 0.10));
+      const q50 = sorted.map((s) => quantileFromSorted(s, 0.50));
+      const q90 = sorted.map((s) => quantileFromSorted(s, 0.90));
+      const q99 = sorted.map((s) => quantileFromSorted(s, 0.99));
       out[outKey] = {
         min: this.mins.get(pk),
         max: this.maxs.get(pk),
         mean: [...mean],
         std,
+        q01, q10, q50, q90, q99,
         count: [count],
       };
     }
     return out;
   }
 
+}
+
+function quantileFromSorted(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  const pos = q * (sorted.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] * (hi - pos) + sorted[hi] * (pos - lo);
 }
 
 /**

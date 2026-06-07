@@ -182,7 +182,11 @@ export async function convertV3ToV21(
 
         const range = ep.videoRanges[camKey];
         if (range) {
-          await sliceVideo(srcPath, dstPath, range[0], range[1]);
+          const minDur = (ep.length ?? 0) / (info.fps || 30);
+          const dur = Math.max(range[1] - range[0], minDur);
+          // Pass codec name from info.json instead of probing each file.
+          const vcodec = (info.features[camKey]?.info as Record<string, unknown> | undefined)?.["video.codec"] as string | undefined;
+          await sliceVideo(srcPath, dstPath, range[0], range[0] + dur, vcodec);
         }
       }
     } else if (ep.videoShards && Object.keys(ep.videoShards).length > 0 && !ffmpegAvailable) {
@@ -394,7 +398,7 @@ function execFile(cmd: string, args: string[]): Promise<string> {
     proc.stderr?.on("data", (d: Buffer) => (stderr += d.toString()));
     proc.on("close", (code) => {
       if (code === 0) resolve(stdout);
-      else reject(new Error(`${cmd} exited ${code}: ${stderr.slice(0, 200)}`));
+      else reject(new Error(`${cmd} exited ${code}:\n${stderr.slice(-500)}`));
     });
     proc.on("error", (err) => reject(err));
   });
@@ -405,19 +409,35 @@ async function sliceVideo(
   dstPath: string,
   fromTs: number,
   toTs: number,
+  codec?: string,
 ): Promise<void> {
-  // -ss after -i (output seeking) ensures timestamps start at 0.
-  // -c copy avoids re-encode but requires keyframe alignment.
-  // -avoid_negative_ts make_zero prevents negative timestamps in output.
-  await execFile("ffmpeg", [
-    "-i", srcPath,
-    "-ss", fromTs.toFixed(3),
-    "-to", toTs.toFixed(3),
-    "-c", "copy",
-    "-avoid_negative_ts", "make_zero",
-    "-y",
-    dstPath,
-  ]);
+  // ffmpeg 4.x can't mux AV1 into MP4 with -c copy. Use codec from
+  // info.json (via parameter) to avoid a per-file ffprobe call.
+  const canCopy = !codec || codec === "h264" || codec === "hevc" || codec === "mpeg4";
+  // -ss after -i: -to is absolute position in the source, NOT duration.
+  if (canCopy) {
+    await execFile("ffmpeg", [
+      "-i", srcPath,
+      "-ss", fromTs.toFixed(6),
+      "-to", toTs.toFixed(6),
+      "-c", "copy",
+      "-avoid_negative_ts", "make_zero",
+      "-y",
+      dstPath,
+    ]);
+  } else {
+    await execFile("ffmpeg", [
+      "-i", srcPath,
+      "-ss", fromTs.toFixed(6),
+      "-to", toTs.toFixed(6),
+      "-c:v", "mpeg4",
+      "-q:v", "2",
+      "-c:a", "copy",
+      "-avoid_negative_ts", "make_zero",
+      "-y",
+      dstPath,
+    ]);
+  }
 }
 
 // ---- info.json generation ----
@@ -436,6 +456,8 @@ function buildV21Info(
     const entry: Record<string, unknown> = { dtype: feat.dtype };
     if (feat.shape) entry.shape = feat.shape;
     if (feat.names) entry.names = feat.names;
+    // Preserve video metadata (codec, fps, etc.) from v3.0.
+    if (feat.dtype === "video" && feat.info) entry.info = feat.info;
     features[key] = entry;
   }
 

@@ -3,6 +3,7 @@
 
 import * as cp from "node:child_process";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { V21Adapter } from "./adapters/V21Adapter";
 import { buildDataPath, buildVideoPath, exists, writeJsonl, readJson, readJsonlIfExists } from "./adapters/util";
@@ -51,11 +52,16 @@ export async function convertV21ToV30(
   onProgress({ done: 0, total, current: "Building data shards..." });
   const dataBoundaries = await buildDataShards(sourceRoot, targetRoot, adapter, info, sorted, chunksSize, onProgress);
 
-  // ---- Build video shards ----
+  // ---- Build video shards (cameras in parallel) ----
   const videoBoundaries: Record<string, Array<Record<string, unknown>>> = {};
   if (ffmpegOk) {
-    for (const cam of cameraKeys) {
-      const vb = await buildVideoShards(sourceRoot, targetRoot, info, sorted, cam, chunksSize, onProgress);
+    const results = await Promise.all(
+      cameraKeys.map(async (cam) => {
+        const vb = await buildVideoShards(sourceRoot, targetRoot, info, sorted, cam, chunksSize, onProgress);
+        return { cam, vb };
+      }),
+    );
+    for (const { cam, vb } of results) {
       if (vb.length !== sorted.length) {
         onProgress({
           done: 0, total, current:
@@ -109,28 +115,50 @@ async function buildDataShards(
   onProgress: (p: ConvertProgress) => void,
 ): Promise<Array<{ chunkIndex: number; fileIndex: number; from: number; to: number }>> {
   const boundaries: Array<{ chunkIndex: number; fileIndex: number; from: number; to: number }> = [];
+  const MAX_ROWS_PER_SHARD = 100000;
+  const concurrency = Math.min(os.cpus().length, 8);
+
+  // Phase 1: read and sanitize all episodes in parallel.
+  const epData: Array<{ index: number; rows: Record<string, unknown>[] } | null> =
+    new Array(episodes.length).fill(null);
+  let completed = 0;
+  let nextIdx = 0;
+
+  const worker = async (): Promise<void> => {
+    while (nextIdx < episodes.length) {
+      const i = nextIdx++;
+      const ep = episodes[i];
+      const dataPath = await adapter.resolveDataFile({ root: srcRoot, info }, ep);
+      if (!dataPath || !(await exists(dataPath))) {
+        throw new Error(`Parquet not found for episode ${ep.episodeIndex}.`);
+      }
+      const { parquetReadObjects, asyncBufferFromFile } = await getHyparquet();
+      const buffer = await asyncBufferFromFile(dataPath);
+      const rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
+      const cleanRows = rows.map(sanitizeRow);
+      for (const r of cleanRows) r.episode_index = ep.episodeIndex;
+      if (cleanRows.length === 0) {
+        onProgress({ done: completed + 1, total: episodes.length, current: `Warn: ep ${ep.episodeIndex} empty` });
+      }
+      epData[i] = { index: i, rows: cleanRows };
+      completed++;
+      onProgress({ done: completed, total: episodes.length, current: `Data: reading ep ${ep.episodeIndex}` });
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(concurrency, episodes.length) }, () => worker());
+  await Promise.all(workers);
+
+  // Phase 2: assemble shards in order and write.
   let fileIndex = 0;
   let rowOffset = 0;
   let shardRows: Record<string, unknown>[] = [];
-  const MAX_ROWS_PER_SHARD = 100000; // ~50 MB typical per shard.
-
   for (let i = 0; i < episodes.length; i++) {
-    const ep = episodes[i];
-    const dataPath = await adapter.resolveDataFile({ root: srcRoot, info }, ep);
-    if (!dataPath || !(await exists(dataPath))) {
-      throw new Error(`Parquet not found for episode ${ep.episodeIndex}.`);
+    const data = epData[i];
+    if (!data) {
+      throw new Error(`Episode ${episodes[i].episodeIndex} not loaded.`);
     }
-    const { parquetReadObjects, asyncBufferFromFile } = await getHyparquet();
-    const buffer = await asyncBufferFromFile(dataPath);
-    const rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
-    const cleanRows = rows.map(sanitizeRow);
-    // Overwrite episode_index to match the actual episode (fixes stale values
-    // from episode deletion/reindex that renamed files but left old column values).
-    for (const r of cleanRows) r.episode_index = ep.episodeIndex;
-    if (cleanRows.length === 0) {
-      onProgress({ done: i + 1, total: episodes.length, current: `Warn: ep ${ep.episodeIndex} has 0 rows` });
-    }
-
+    const cleanRows = data.rows;
     const from = rowOffset;
     rowOffset += cleanRows.length;
     const to = rowOffset;
@@ -138,7 +166,6 @@ async function buildDataShards(
     boundaries.push({ chunkIndex: 0, fileIndex, from, to });
     shardRows.push(...cleanRows);
 
-    // Flush shard when it gets large or it's the last episode.
     if (shardRows.length >= MAX_ROWS_PER_SHARD || i === episodes.length - 1) {
       const dstRel = buildDataPath({
         template: "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
@@ -152,7 +179,7 @@ async function buildDataShards(
       rowOffset = 0;
     }
 
-    onProgress({ done: i + 1, total: episodes.length, current: `Data: ep ${ep.episodeIndex}` });
+    onProgress({ done: i + 1, total: episodes.length, current: `Data: writing ep ${episodes[i].episodeIndex}` });
   }
 
   return boundaries;
@@ -178,9 +205,12 @@ async function buildVideoShards(
     epVideos.push({ path: await exists(abs) ? abs : undefined, ep });
   }
 
-  // Group 100 episodes per video shard.
+  // Group ~30 episodes per video shard (~200 MB each) to limit
+  // cumulative PTS drift from -c copy keyframe alignment. Larger
+  // batches accumulate enough sub-frame error to violate the
+  // official viewer's frame timestamp tolerance (0.0001 s).
   const boundaries: Array<Record<string, unknown>> = [];
-  const batchSize = 100;
+  const batchSize = 30;
   let fileIndex = 0;
 
   for (let i = 0; i < epVideos.length; i += batchSize) {
@@ -202,7 +232,9 @@ async function buildVideoShards(
       await fs.unlink(listFile).catch(() => {});
     }
 
-    // Resolve actual durations for all episodes in this batch in parallel.
+    // Use actual video durations via ffprobe. The per-episode files
+    // are now created with libx264 (clean PTS from 0), so
+    // getVideoDuration accurately reflects the stream duration.
     const durations = await Promise.all(
       batch.map((ev) =>
         ev.path
@@ -294,20 +326,43 @@ function buildV30Info(
   chunksSize: number,
   totalTasks: number,
 ): Record<string, unknown> {
-  return {
+  // Build v3.0-compatible feature entries. v2.x stores video metadata
+  // under "info"; official v3.0 uses "video_info". Rename accordingly.
+  // Non-video features get an "fps" field added.
+  const features: Record<string, unknown> = {};
+  for (const [key, feat] of Object.entries(info.features)) {
+    const entry: Record<string, unknown> = { ...feat };
+    if (feat.dtype === "video") {
+      if (feat.info) {
+        entry.video_info = feat.info;
+        delete entry.info;
+      }
+    } else {
+      entry.fps = info.fps;
+    }
+    features[key] = entry;
+  }
+
+  const info30: Record<string, unknown> = {
     codebase_version: "v3.0",
     robot_type: info.robotType ?? "unknown",
-    fps: info.fps,
+    fps: Number.isFinite(info.fps) ? Math.round(info.fps) : info.fps,
     total_episodes: totalEpisodes,
     total_frames: info.totalFrames,
     total_tasks: totalTasks,
-    total_videos: totalEpisodes * cameraKeys.length,
-    total_chunks: Math.ceil(totalEpisodes / chunksSize),
     chunks_size: chunksSize,
     data_path: "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
-    video_path: "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
-    features: info.features,
+    features,
   };
+
+  // video_path is null when there are no video features (official convention).
+  if (cameraKeys.length > 0) {
+    info30.video_path = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4";
+  } else {
+    info30.video_path = null;
+  }
+
+  return info30;
 }
 
 async function writeParquetFile(
@@ -536,17 +591,6 @@ function pooledStd(stds: number[][], means: number[][], counts: number[]): numbe
   return sumVar.map((v) => Math.sqrt(v / (totalN - 1)));
 }
 
-function execFile(cmd: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proc = cp.spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${cmd} exited ${code}`));
-    });
-    proc.on("error", reject);
-  });
-}
-
 /** Get the actual duration (seconds) of a video file via ffprobe. */
 async function getVideoDuration(videoPath: string): Promise<number> {
   return new Promise((resolve) => {
@@ -562,3 +606,15 @@ async function getVideoDuration(videoPath: string): Promise<number> {
     proc.on("error", () => resolve(0));
   });
 }
+
+function execFile(cmd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = cp.spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} exited ${code}`));
+    });
+    proc.on("error", reject);
+  });
+}
+

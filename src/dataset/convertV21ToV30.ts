@@ -326,20 +326,12 @@ function buildV30Info(
   chunksSize: number,
   totalTasks: number,
 ): Record<string, unknown> {
-  // Build v3.0-compatible feature entries. v2.x stores video metadata
-  // under "info"; official v3.0 uses "video_info". Rename accordingly.
-  // Non-video features get an "fps" field added.
+  // Build v3.0-compatible feature entries. Non-video features get an
+  // "fps" field added. Video features keep their original "info" from v2.x.
   const features: Record<string, unknown> = {};
   for (const [key, feat] of Object.entries(info.features)) {
     const entry: Record<string, unknown> = { ...feat };
-    if (feat.dtype === "video") {
-      if (feat.info) {
-        entry.video_info = feat.info;
-        delete entry.info;
-      }
-    } else {
-      entry.fps = info.fps;
-    }
+    if (feat.dtype !== "video") entry.fps = info.fps;
     features[key] = entry;
   }
 

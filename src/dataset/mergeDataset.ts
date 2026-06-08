@@ -174,6 +174,68 @@ export async function mergeDatasets(
   await writeJsonl(path.join(targetRoot, "meta", "tasks.jsonl"), taskRecords);
 
   // ---- merge per-episode stats (re-index only, no recomputation) ----
+  // Collect stat feature keys AND their fields per source for consistency.
+  const sourceStatInfo: Array<{
+    name: string;
+    features: Map<string, Set<string>>; // featureKey → Set of field names
+  }> = [];
+  for (const snap of snapshots) {
+    const srcStats = await readJsonlIfExists(
+      path.join(snap.descriptor.root!, "meta", "episodes_stats.jsonl"),
+    );
+    const features = new Map<string, Set<string>>();
+    if (srcStats && srcStats.length > 0) {
+      for (const rec of srcStats) {
+        const s = (rec as Record<string, unknown>).stats ?? rec;
+        for (const [fk, fv] of Object.entries(s as Record<string, Record<string, unknown>>)) {
+          if (!fv || typeof fv !== "object") continue;
+          if (!features.has(fk)) features.set(fk, new Set());
+          const fields = features.get(fk)!;
+          for (const field of Object.keys(fv)) fields.add(field);
+        }
+      }
+    }
+    sourceStatInfo.push({ name: snap.descriptor.name, features });
+  }
+  // Check all sources have the same stat feature keys AND fields.
+  if (sourceStatInfo.length >= 2) {
+    const ref = sourceStatInfo[0];
+    for (let i = 1; i < sourceStatInfo.length; i++) {
+      const cur = sourceStatInfo[i];
+      const curName = cur.name;
+      // Check feature keys.
+      const refKeys = new Set(ref.features.keys());
+      const curKeys = new Set(cur.features.keys());
+      const missingKeys = [...refKeys].filter((k) => !curKeys.has(k));
+      const extraKeys = [...curKeys].filter((k) => !refKeys.has(k));
+      if (missingKeys.length > 0 || extraKeys.length > 0) {
+        const parts: string[] = [];
+        if (missingKeys.length > 0) parts.push(`"${curName}" missing features: ${missingKeys.join(", ")}`);
+        if (extraKeys.length > 0) parts.push(`"${curName}" extra features: ${extraKeys.join(", ")}`);
+        throw new Error(
+          `Cannot merge: stat features are inconsistent. ${parts.join("; ")}. ` +
+          `Run "Recompute Stats" on the inconsistent dataset before merging.`,
+        );
+      }
+      // Check fields within each feature.
+      for (const fk of refKeys) {
+        const refFields = ref.features.get(fk)!;
+        const curFields = cur.features.get(fk)!;
+        const missingFields = [...refFields].filter((f) => !curFields.has(f));
+        const extraFields = [...curFields].filter((f) => !refFields.has(f));
+        if (missingFields.length > 0 || extraFields.length > 0) {
+          const parts: string[] = [];
+          if (missingFields.length > 0) parts.push(`"${curName}" ${fk} missing: ${missingFields.join(", ")}`);
+          if (extraFields.length > 0) parts.push(`"${curName}" ${fk} extra: ${extraFields.join(", ")}`);
+          throw new Error(
+            `Cannot merge: stat fields are inconsistent. ${parts.join("; ")}. ` +
+            `Run "Recompute Stats" on the inconsistent dataset before merging.`,
+          );
+        }
+      }
+    }
+  }
+
   const allEpStats: Record<string, unknown>[] = [];
   let epOffset = 0;
   for (const snap of snapshots) {
@@ -182,16 +244,10 @@ export async function mergeDatasets(
     );
     if (srcStats) {
       for (const rec of srcStats) {
-        // Normalize: ensure stats are under "stats" key.
         const statsObj = (rec as Record<string, unknown>).stats ?? rec;
-        const newRec: Record<string, unknown> = {
-          episode_index: epOffset++,
-          stats: statsObj,
-        };
-        allEpStats.push(newRec);
+        allEpStats.push({ episode_index: epOffset++, stats: statsObj });
       }
     } else {
-      // No stats for this source — skip with gap.
       epOffset += snap.episodes.length;
     }
   }

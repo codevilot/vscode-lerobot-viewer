@@ -69,6 +69,20 @@ export async function mergeDatasets(
   const allCameraKeys = unionCameraKeys(snapshots);
   const mergedTasks = mergeTasks(snapshots);
   const mergedEpisodes = reindexEpisodes(snapshots);
+
+  // Build task_index remapping for each source: old_index → new_index.
+  // When datasets are merged, the task list is reindexed. Episodes'
+  // parquet data still has the old task_index, which now points to a
+  // different (or wrong) task in the merged list.
+  const taskRemap = new Map<string, Map<number, number>>();
+  for (const snap of snapshots) {
+    const remap = new Map<number, number>();
+    for (const srcTask of snap.tasks) {
+      const newIdx = mergedTasks.findIndex((t) => t.task === srcTask.task);
+      if (newIdx >= 0) remap.set(srcTask.taskIndex, newIdx);
+    }
+    taskRemap.set(snap.descriptor.id, remap);
+  }
   const totalFrames = mergedEpisodes.reduce((sum, e) => sum + e.length, 0);
 
   // ---- prepare target ----
@@ -96,7 +110,8 @@ export async function mergeDatasets(
       const dstDataPath = path.join(targetRoot, dstDataRel);
       onProgress({ done, total, current: `Copying parquet for episode ${ep.episodeIndex}` });
       await fs.mkdir(path.dirname(dstDataPath), { recursive: true });
-      await copyParquetWithEpisodeIndex(srcDataPath, dstDataPath, ep.episodeIndex);
+      const remap = taskRemap.get(srcSnapshot.descriptor.id);
+      await copyParquetWithEpisodeIndex(srcDataPath, dstDataPath, ep.episodeIndex, remap);
     }
 
     // ---- video files ----
@@ -441,6 +456,7 @@ async function copyParquetWithEpisodeIndex(
   srcPath: string,
   dstPath: string,
   newIndex: number,
+  taskRemap?: Map<number, number>,
 ): Promise<void> {
   try {
     const { parquetReadObjects, asyncBufferFromFile } = await getHyparquet();
@@ -449,11 +465,15 @@ async function copyParquetWithEpisodeIndex(
     const buffer = await asyncBufferFromFile(srcPath);
     const rows = (await parquetReadObjects({ file: buffer })) as Record<string, unknown>[];
 
-    // Update episode_index and convert BigInt to Number.
+    // Update episode_index, task_index, and convert BigInt to Number.
     for (const r of rows) {
       r.episode_index = newIndex;
       for (const [k, v] of Object.entries(r)) {
         if (typeof v === "bigint") (r as any)[k] = Number(v);
+      }
+      if (taskRemap && "task_index" in r) {
+        const oldTi = Number(r.task_index);
+        if (taskRemap.has(oldTi)) r.task_index = taskRemap.get(oldTi)!;
       }
     }
 

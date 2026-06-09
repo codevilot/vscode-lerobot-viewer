@@ -388,7 +388,7 @@ class PixelStatsAccumulator {
       min: this.mins.map((v) => [[norm(v)]]),
       max: this.maxs.map((v) => [[norm(v)]]),
       mean: this.means.map((v) => [[norm(v)]]),
-      std: this.m2s.map((m2) => [[Math.sqrt(m2 / count)]]),
+      std: this.m2s.map((m2) => [[norm(Math.sqrt(m2 / count))]]),
       q01,
       q10,
       q50,

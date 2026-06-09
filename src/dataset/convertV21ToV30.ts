@@ -301,17 +301,32 @@ async function writeBoundaryParquet(
   // Write boundary parquet (v3.0 canonical format).
   await writeEpisodesParquet(dstRoot, records);
 
-  // Write tasks.parquet (v3.0 format).
+  // Write tasks.parquet (v3.0 format). LeRobot accesses task names via
+  // DataFrame index (.iloc[idx].name). pandas needs schema metadata to
+  // recognize __index_level_0__ as the index column, otherwise it reads
+  // it as a regular column and .iloc[0].name returns 0 (int) instead of
+  // the task string.
   if (tasks.length > 0) {
     const pjsTask = getParquetjs();
     const taskSchema = new pjsTask.ParquetSchema({
       task_index: { type: "INT64" },
-      task: { type: "UTF8" },
+      __index_level_0__: { type: "UTF8" },
     });
     const taskPath = path.join(dstRoot, "meta", "tasks.parquet");
     const taskWriter = await pjsTask.ParquetWriter.openFile(taskSchema, taskPath, { compression: "UNCOMPRESSED" });
+    // Add pandas metadata so __index_level_0__ is recognized as the index.
+    taskWriter.setMetadata("pandas", JSON.stringify({
+      index_columns: ["__index_level_0__"],
+      column_indexes: [{ name: null, field_name: null, pandas_type: "unicode", numpy_type: "str", metadata: { encoding: "UTF-8" } }],
+      columns: [
+        { name: "task_index", field_name: "task_index", pandas_type: "int64", numpy_type: "int64", metadata: null },
+        { name: null, field_name: "__index_level_0__", pandas_type: "unicode", numpy_type: "str", metadata: null },
+      ],
+      creator: { library: "pyarrow", version: "23.0.1" },
+      pandas_version: "3.0.1",
+    }));
     for (const t of tasks) {
-      await taskWriter.appendRow({ task_index: t.taskIndex, task: t.task });
+      await taskWriter.appendRow({ task_index: t.taskIndex, __index_level_0__: t.task });
     }
     await taskWriter.close();
   }
@@ -346,6 +361,7 @@ function buildV30Info(
     data_path: "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
     features,
   };
+  if (info.splits) info30.splits = info.splits;
 
   // video_path is null when there are no video features (official convention).
   if (cameraKeys.length > 0) {

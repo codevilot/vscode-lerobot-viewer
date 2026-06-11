@@ -47,6 +47,7 @@ export function registerCommands(
   previews: EpisodePreviewPanelManager,
   metadataViewer: MetadataViewerPanelManager,
   tree: DatasetTreeProvider,
+  treeView: vscode.TreeView<unknown>,
 ): void {
   const reg = (id: string, handler: (...args: unknown[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, handler));
@@ -55,11 +56,11 @@ export function registerCommands(
     const result = await vscode.window.showOpenDialog({
       canSelectFolders: true,
       canSelectFiles: false,
-      canSelectMany: false,
-      openLabel: "Open LeRobot dataset",
+      canSelectMany: true,
+      openLabel: "Open LeRobot dataset(s)",
     });
     if (!result || result.length === 0) return;
-    await service.addLocalFolder(result[0]);
+    for (const uri of result) await service.addLocalFolder(uri);
   });
 
   reg(CommandIds.addDatasetFolder, async () => {
@@ -110,9 +111,12 @@ export function registerCommands(
   });
 
   reg(CommandIds.removeDataset, (...args: unknown[]) => {
-    const node = args[0] as DatasetNode | undefined;
-    if (!node || node.kind !== "dataset") return;
-    service.remove(node.descriptor.id);
+    const nodes = extractDatasetNodes(treeView.selection.length > 1 ? treeView.selection : args);
+    if (nodes.length === 0) return;
+    const names = nodes.map((n) => n.descriptor.name).join(", ");
+    const count = nodes.length;
+    for (const node of nodes) service.remove(node.descriptor.id);
+    void vscode.window.showInformationMessage(`Removed ${count} dataset${count > 1 ? "s" : ""}: ${names}`);
   });
 
   reg(CommandIds.refresh, () => {
@@ -369,4 +373,17 @@ function isDatasetIdArg(value: unknown): value is { datasetId: string } {
     typeof value === "object" &&
     typeof (value as { datasetId?: unknown }).datasetId === "string"
   );
+}
+
+function extractDatasetNodes(selection: readonly unknown[]): DatasetNode[] {
+  const out: DatasetNode[] = [];
+  for (const item of selection) {
+    if (isDatasetNode(item)) out.push(item);
+    if (Array.isArray(item)) {
+      for (const sub of item) {
+        if (isDatasetNode(sub)) out.push(sub);
+      }
+    }
+  }
+  return out;
 }

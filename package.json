@@ -130,6 +130,11 @@
         "command": "lerobotViewer.editEpisodeTasks",
         "title": "LeRobot: Assign Tasks to Episode",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "lerobotViewer.renameDataset",
+        "title": "LeRobot: Rename Dataset",
+        "icon": "$(edit)"
       }
     ],
     "menus": {
@@ -192,9 +197,14 @@
           "group": "1_modify@0"
         },
         {
-          "command": "lerobotViewer.revealInExplorer",
+          "command": "lerobotViewer.renameDataset",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@2"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@3"
         }
       ],
       "commandPalette": [
@@ -220,6 +230,10 @@
         },
         {
           "command": "lerobotViewer.editEpisodeTasks",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.renameDataset",
           "when": "false"
         }
       ]

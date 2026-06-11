@@ -35,6 +35,7 @@ export const CommandIds = {
   cleanSshCache: "lerobotViewer.cleanSshCache",
   editTasks: "lerobotViewer.editTasks",
   editEpisodeTasks: "lerobotViewer.editEpisodeTasks",
+  renameDataset: "lerobotViewer.renameDataset",
 } as const;
 
 interface PreviewArgs {
@@ -224,6 +225,31 @@ export function registerCommands(
     const episodeIndices = nodes.map((n) => n.episode.episodeIndex);
     await runEpisodeTaskPicker(service, datasetId, episodeIndices);
     tree.refresh();
+  });
+
+  reg(CommandIds.renameDataset, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) return;
+    const descriptor = service.get(datasetId);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Only local datasets can be renamed.");
+      return;
+    }
+
+    const newName = await vscode.window.showInputBox({
+      prompt: "New folder name for the dataset",
+      value: descriptor.name,
+      validateInput: validateDatasetFolderName,
+    });
+    const trimmed = newName?.trim();
+    if (!trimmed || trimmed === descriptor.name) return;
+
+    const updated = await service.renameDataset(datasetId, trimmed);
+    if (updated) {
+      tree.refresh();
+      void vscode.window.showInformationMessage(`Renamed dataset to "${updated.name}".`);
+    }
   });
 
   reg(CommandIds.revealInExplorer, async (...args: unknown[]) => {
@@ -709,6 +735,14 @@ function parseUserHostPort(raw: string): Omit<SshTarget, "remotePath"> {
     if (!Number.isFinite(port)) port = undefined;
   }
   return { host, user, port };
+}
+
+function validateDatasetFolderName(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return "Name cannot be empty.";
+  if (trimmed === "." || trimmed === "..") return "Name cannot be '.' or '..'.";
+  if (/[<>:"/\\|?*]/.test(trimmed)) return "Name contains invalid characters.";
+  return undefined;
 }
 
 function isPreviewArgs(value: unknown): value is PreviewArgs {

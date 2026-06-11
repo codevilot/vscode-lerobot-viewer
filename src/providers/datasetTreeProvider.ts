@@ -50,6 +50,7 @@ export interface EpisodeNode extends NodeBase {
   datasetId: string;
   episode: LeRobotEpisode;
   fps: number;
+  taskMap?: Record<string, number>;
 }
 export interface MetadataLeafNode extends NodeBase {
   kind: "metadataLeaf";
@@ -127,13 +128,15 @@ export class DatasetTreeProvider implements vscode.TreeDataProvider<LeRobotTreeN
 
   private episodeChildren(datasetId: string, snapshot: DatasetSnapshot): EpisodeNode[] {
     const filter = this.filter;
+    const taskMap: Record<string, number> = {};
+    for (const t of snapshot.tasks) taskMap[t.task] = t.taskIndex;
     return snapshot.episodes
       .filter((ep) => {
         if (!filter) return true;
         if (String(ep.episodeIndex).includes(filter)) return true;
         return ep.tasks.some((t) => t.toLowerCase().includes(filter));
       })
-      .map((episode) => ({ kind: "episode", datasetId, episode, fps: snapshot.info.fps }));
+      .map((episode) => ({ kind: "episode", datasetId, episode, fps: snapshot.info.fps, taskMap }));
   }
 }
 
@@ -221,7 +224,11 @@ function episodeItem(node: EpisodeNode): vscode.TreeItem {
     `Episode ${ep.episodeIndex.toString().padStart(4, "0")}`,
     vscode.TreeItemCollapsibleState.None,
   );
-  item.description = `${ep.length || "?"} frames · ${seconds}s${ep.tasks.length ? ` · ${ep.tasks[0]}` : ""}`;
+  const taskLabels = ep.tasks.map((t) => {
+    const idx = node.taskMap?.[t];
+    return idx !== undefined ? `[${idx}] ${t}` : t;
+  });
+  item.description = `${ep.length || "?"} frames · ${seconds}s${taskLabels.length ? ` · ${taskLabels.join(", ")}` : ""}`;
   item.tooltip = ep.tasks.length ? ep.tasks.join("\n") : undefined;
   item.iconPath = new vscode.ThemeIcon("play-circle");
   item.contextValue = "lerobotEpisode";

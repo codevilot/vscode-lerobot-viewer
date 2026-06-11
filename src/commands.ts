@@ -18,6 +18,9 @@ import {
 import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
 import { recomputeStats } from "./dataset/computeStats";
+import { deleteFeature } from "./dataset/deleteFeature";
+import { dropDimensions } from "./dataset/dropDimensions";
+import { renameFeature } from "./dataset/renameFeature";
 import { log, logError } from "./log";
 import type { SshTarget } from "./types";
 
@@ -39,6 +42,9 @@ export const CommandIds = {
   editEpisodeTasks: "lerobotViewer.editEpisodeTasks",
   renameDataset: "lerobotViewer.renameDataset",
   recomputeStats: "lerobotViewer.recomputeStats",
+  renameFeature: "lerobotViewer.renameFeature",
+  deleteFeature: "lerobotViewer.deleteFeature",
+  dropDimensions: "lerobotViewer.dropDimensions",
 } as const;
 
 interface PreviewArgs {
@@ -330,6 +336,146 @@ export function registerCommands(
     } catch (err) {
       logError(`recomputing stats for ${datasetId}`, err);
       void vscode.window.showErrorMessage(`Failed to recompute stats: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.renameFeature, async (...args: unknown[]) => {
+    const ctx = await pickWritableV2DatasetFeature(service, args[0], "rename a feature");
+    if (!ctx) return;
+    const newName = await vscode.window.showInputBox({
+      prompt: `Rename "${ctx.feature.key}"`,
+      value: ctx.feature.key,
+      validateInput: (v) => {
+        const trimmed = v.trim();
+        if (!trimmed) return "Name cannot be empty.";
+        if (trimmed === ctx.feature.key) return "Name is unchanged.";
+        if (ctx.snapshot.info.features[trimmed]) return "Feature already exists.";
+        return undefined;
+      },
+    });
+    const trimmed = newName?.trim();
+    if (!trimmed) return;
+
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Renaming ${ctx.feature.key}`,
+          cancellable: false,
+        },
+        async (progress) => {
+          await renameFeature(ctx.descriptor.root!, ctx.feature.key, trimmed, (p) =>
+            progress.report({ message: `${p.done}/${p.total}` }),
+          );
+        },
+      );
+      service.invalidate(ctx.datasetId);
+      tree.refresh();
+      void vscode.window.showInformationMessage(`Renamed "${ctx.feature.key}" to "${trimmed}".`);
+    } catch (err) {
+      logError(`renaming feature ${ctx.feature.key} in ${ctx.datasetId}`, err);
+      void vscode.window.showErrorMessage(`Failed to rename feature: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.deleteFeature, async (...args: unknown[]) => {
+    const ctx = await pickWritableV2DatasetFeature(service, args[0], "delete a feature");
+    if (!ctx) return;
+    const choice = await vscode.window.showWarningMessage(
+      `Delete feature "${ctx.feature.key}"? This rewrites parquet files or removes matching video files.`,
+      { modal: true },
+      "Delete",
+    );
+    if (choice !== "Delete") return;
+
+    const work = await chooseDatasetRewriteTarget(ctx.descriptor.root!);
+    if (!work) return;
+
+    try {
+      await runDatasetCopyIfNeeded(ctx.descriptor.root!, work.root);
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Deleting ${ctx.feature.key}`,
+          cancellable: false,
+        },
+        async (progress) => {
+          await deleteFeature(work.root, ctx.feature.key, (p) =>
+            progress.report({ message: `${p.done}/${p.total}` }),
+          );
+        },
+      );
+      service.invalidate(ctx.datasetId);
+      tree.refresh();
+      if (work.isCopy) await service.addLocalFolder(vscode.Uri.file(work.root));
+      void vscode.window.showInformationMessage(`Deleted feature "${ctx.feature.key}".`);
+    } catch (err) {
+      logError(`deleting feature ${ctx.feature.key} in ${ctx.datasetId}`, err);
+      void vscode.window.showErrorMessage(`Failed to delete feature: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.dropDimensions, async (...args: unknown[]) => {
+    const ctx = await pickWritableV2DatasetFeature(service, args[0], "drop dimensions", {
+      matrixOnly: true,
+    });
+    if (!ctx || !ctx.feature.shape) return;
+
+    const names = featureDimensionNames(ctx.feature.key, ctx.feature.names, ctx.feature.shape[0]);
+    const items = names.map((name, index) => ({ label: name, index, picked: true }));
+    const qp = vscode.window.createQuickPick<vscode.QuickPickItem & { index: number }>();
+    qp.canSelectMany = true;
+    qp.title = `Drop dimensions from ${ctx.feature.key}`;
+    qp.placeholder = "Keep checked dimensions; unchecked dimensions will be removed";
+    qp.items = items;
+    qp.selectedItems = items;
+    const picked = await new Promise<readonly { index: number }[] | undefined>((resolve) => {
+      qp.onDidAccept(() => { resolve(qp.selectedItems); qp.hide(); });
+      qp.onDidHide(() => resolve(undefined));
+      qp.show();
+    });
+    if (!picked) return;
+    const keepIndices = picked.map((item) => item.index).sort((a, b) => a - b);
+    if (keepIndices.length === 0) {
+      void vscode.window.showInformationMessage("At least one dimension must remain.");
+      return;
+    }
+    if (keepIndices.length === ctx.feature.shape[0]) {
+      void vscode.window.showInformationMessage("No dimensions selected for removal.");
+      return;
+    }
+
+    const choice = await vscode.window.showWarningMessage(
+      `Drop ${ctx.feature.shape[0] - keepIndices.length} dimension(s) from "${ctx.feature.key}"? This rewrites parquet files.`,
+      { modal: true },
+      "Drop",
+    );
+    if (choice !== "Drop") return;
+
+    const work = await chooseDatasetRewriteTarget(ctx.descriptor.root!);
+    if (!work) return;
+
+    try {
+      await runDatasetCopyIfNeeded(ctx.descriptor.root!, work.root);
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Dropping dimensions from ${ctx.feature.key}`,
+          cancellable: false,
+        },
+        async (progress) => {
+          await dropDimensions(work.root, ctx.feature.key, keepIndices, (p) =>
+            progress.report({ message: `${p.done}/${p.total}` }),
+          );
+        },
+      );
+      service.invalidate(ctx.datasetId);
+      tree.refresh();
+      if (work.isCopy) await service.addLocalFolder(vscode.Uri.file(work.root));
+      void vscode.window.showInformationMessage(`Updated feature "${ctx.feature.key}".`);
+    } catch (err) {
+      logError(`dropping dimensions from ${ctx.feature.key} in ${ctx.datasetId}`, err);
+      void vscode.window.showErrorMessage(`Failed to drop dimensions: ${(err as Error).message}`);
     }
   });
 
@@ -824,6 +970,109 @@ function validateDatasetFolderName(value: string): string | undefined {
   if (trimmed === "." || trimmed === "..") return "Name cannot be '.' or '..'.";
   if (/[<>:"/\\|?*]/.test(trimmed)) return "Name contains invalid characters.";
   return undefined;
+}
+
+async function pickWritableV2DatasetFeature(
+  service: DatasetService,
+  arg: unknown,
+  action: string,
+  opts: { matrixOnly?: boolean } = {},
+): Promise<
+  | {
+      datasetId: string;
+      descriptor: NonNullable<ReturnType<DatasetService["get"]>>;
+      snapshot: Awaited<ReturnType<DatasetService["getSnapshot"]>>;
+      feature: { key: string; dtype: string; shape?: number[]; names?: unknown };
+    }
+  | undefined
+> {
+  const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+  if (!datasetId) {
+    void vscode.window.showInformationMessage(`Use the context menu on a local v2.x dataset to ${action}.`);
+    return undefined;
+  }
+  const descriptor = service.get(datasetId);
+  if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+    void vscode.window.showInformationMessage("This operation is only supported for local datasets.");
+    return undefined;
+  }
+  const snapshot = await service.getSnapshot(datasetId);
+  if (snapshot.version !== "v2.0" && snapshot.version !== "v2.1") {
+    void vscode.window.showInformationMessage("This operation is only supported for v2.x datasets.");
+    return undefined;
+  }
+
+  const features = Object.entries(snapshot.info.features)
+    .filter(([, feature]) => {
+      if (!opts.matrixOnly) return true;
+      return Array.isArray(feature.shape) && feature.shape.length === 1 && feature.shape[0] > 1 && feature.dtype !== "video";
+    })
+    .map(([key, feature]) => ({
+      label: key,
+      description: `${feature.dtype}${feature.shape ? ` [${feature.shape.join(", ")}]` : ""}`,
+      key,
+      feature,
+    }));
+
+  if (features.length === 0) {
+    void vscode.window.showInformationMessage("No matching features found.");
+    return undefined;
+  }
+  const picked = await vscode.window.showQuickPick(features, {
+    placeHolder: `Select a feature to ${action}`,
+  });
+  if (!picked) return undefined;
+  return {
+    datasetId,
+    descriptor,
+    snapshot,
+    feature: { key: picked.key, ...picked.feature },
+  };
+}
+
+async function chooseDatasetRewriteTarget(sourceRoot: string): Promise<{ root: string; isCopy: boolean } | undefined> {
+  const choice = await vscode.window.showQuickPick(
+    [
+      { label: "$(edit) Modify in-place", isCopy: false },
+      { label: "$(save-as) Save as new dataset", isCopy: true },
+    ],
+    { placeHolder: "How should this dataset rewrite be applied?" },
+  );
+  if (!choice) return undefined;
+  if (!choice.isCopy) return { root: sourceRoot, isCopy: false };
+
+  const targetUri = await vscode.window.showOpenDialog({
+    canSelectFolders: true,
+    canSelectFiles: false,
+    canSelectMany: false,
+    openLabel: "Select target folder",
+  });
+  if (!targetUri || targetUri.length === 0) return undefined;
+  return { root: targetUri[0].fsPath, isCopy: true };
+}
+
+async function runDatasetCopyIfNeeded(sourceRoot: string, targetRoot: string): Promise<void> {
+  if (sourceRoot === targetRoot) return;
+  const { copyDataset } = await import("./dataset/datasetCopy");
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Copying dataset",
+      cancellable: false,
+    },
+    async (progress) => copyDataset(sourceRoot, targetRoot, (message) => progress.report({ message })),
+  );
+}
+
+function featureDimensionNames(key: string, names: unknown, count: number): string[] {
+  if (Array.isArray(names) && names.length === count) return names.map(String);
+  if (names && typeof names === "object") {
+    const flattened = Object.values(names as Record<string, unknown>).flatMap((value) =>
+      Array.isArray(value) ? value.map(String) : [],
+    );
+    if (flattened.length === count) return flattened;
+  }
+  return Array.from({ length: count }, (_, index) => `${key}[${index}]`);
 }
 
 function isPreviewArgs(value: unknown): value is PreviewArgs {

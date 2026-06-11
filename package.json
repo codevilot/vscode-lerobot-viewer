@@ -145,6 +145,21 @@
         "command": "lerobotViewer.recomputeStats",
         "title": "LeRobot: Recompute Stats",
         "icon": "$(sync)"
+      },
+      {
+        "command": "lerobotViewer.renameFeature",
+        "title": "LeRobot: Rename Feature",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "lerobotViewer.deleteFeature",
+        "title": "LeRobot: Delete Feature",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "lerobotViewer.dropDimensions",
+        "title": "LeRobot: Drop Dimensions",
+        "icon": "$(filter)"
       }
     ],
     "menus": {
@@ -222,9 +237,24 @@
           "group": "1_modify@3"
         },
         {
-          "command": "lerobotViewer.revealInExplorer",
+          "command": "lerobotViewer.renameFeature",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@4"
+        },
+        {
+          "command": "lerobotViewer.deleteFeature",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@5"
+        },
+        {
+          "command": "lerobotViewer.dropDimensions",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@6"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@7"
         }
       ],
       "commandPalette": [
@@ -262,6 +292,18 @@
         },
         {
           "command": "lerobotViewer.recomputeStats",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.renameFeature",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.deleteFeature",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.dropDimensions",
           "when": "false"
         }
       ]

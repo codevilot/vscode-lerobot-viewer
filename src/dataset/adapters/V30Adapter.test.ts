@@ -97,6 +97,36 @@ test("V30Adapter: resolves shared video shard with frame range when known", asyn
   assert.match(loc!.note ?? "", /using data shard/);
 });
 
+test("V30Adapter: uses video timestamp range instead of data frame range for shared video", async () => {
+  const videoRel = "videos/observation.images.cam_high/chunk-000/file-000.mp4";
+  const root = await makeTempDataset({
+    "meta/info.json": V30_INFO,
+    [videoRel]: Buffer.alloc(8),
+  });
+  tempRoots.push(root);
+  const adapter = new V30Adapter();
+  const info = await adapter.loadInfo(root);
+  const loc = await adapter.resolveVideo(
+    { root, info },
+    {
+      episodeIndex: 7,
+      tasks: ["inspect"],
+      length: 100,
+      frameRange: [1000, 1100],
+      videoShards: {
+        "observation.images.cam_high": { chunkIndex: 0, fileIndex: 0 },
+      },
+      videoRanges: {
+        "observation.images.cam_high": [1, 3],
+      },
+    },
+    "observation.images.cam_high",
+  );
+  assert.ok(loc, "shared shard video should resolve");
+  assert.equal(loc!.path, path.join(root, videoRel));
+  assert.deepEqual(loc!.shardFrameRange, [50, 150]);
+});
+
 test("V30Adapter: falls back to file-000 with note when shard index unknown", async () => {
   const videoRel = "videos/observation.images.cam_high/chunk-000/file-000.mp4";
   const root = await makeTempDataset({

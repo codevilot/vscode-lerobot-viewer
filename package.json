@@ -291,11 +291,12 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "package": "vsce package"
+    "package": "npx @vscode/vsce package"
   },
   "dependencies": {
     "@types/ssh2-sftp-client": "^9.0.6",
     "hyparquet": "^1.25.8",
+    "parquetjs": "^0.11.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "ssh2-sftp-client": "^12.1.1"

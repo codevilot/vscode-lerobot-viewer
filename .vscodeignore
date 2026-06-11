@@ -1,5 +1,6 @@
 .vscode/**
 .vscode-test/**
+.claude/**
 out/**
 out-webview/**
 src/**

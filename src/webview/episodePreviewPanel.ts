@@ -11,9 +11,10 @@ import { launchRerun } from "../rerun/rerunLauncher";
 import type { LeRobotEpisode } from "../types";
 import { BaseWebviewPanel } from "./baseWebviewPanel";
 import type { FromWebviewMessage } from "./protocol";
+import { serveVideo, stopServeVideo } from "./videoServer";
 
 export class EpisodePreviewPanelManager implements vscode.Disposable {
-  private readonly panels = new Map<string, EpisodePreviewPanel>();
+  private panel: EpisodePreviewPanel | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -21,13 +22,6 @@ export class EpisodePreviewPanelManager implements vscode.Disposable {
   ) {}
 
   async show(datasetId: string, episodeIndex: number): Promise<void> {
-    const key = `${datasetId}::${episodeIndex}`;
-    const existing = this.panels.get(key);
-    if (existing) {
-      existing.reveal();
-      return;
-    }
-
     let snapshot;
     try {
       snapshot = await this.service.getSnapshot(datasetId);
@@ -45,19 +39,21 @@ export class EpisodePreviewPanelManager implements vscode.Disposable {
       return;
     }
 
-    const panel = new EpisodePreviewPanel(
-      this.context,
-      this.service,
-      snapshot.descriptor,
-      episode,
-    );
-    this.panels.set(key, panel);
-    panel.onDidDispose(() => this.panels.delete(key));
+    if (this.panel) {
+      // Reuse existing panel — update and reveal.
+      this.panel.setEpisode(snapshot.descriptor, episode);
+      this.panel.reveal();
+    } else {
+      this.panel = new EpisodePreviewPanel(
+        this.context, this.service, snapshot.descriptor, episode,
+      );
+      this.panel.onDidDispose(() => { this.panel = undefined; });
+    }
   }
 
   dispose(): void {
-    for (const p of this.panels.values()) p.dispose();
-    this.panels.clear();
+    this.panel?.dispose();
+    this.panel = undefined;
   }
 }
 
@@ -66,7 +62,7 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
     context: vscode.ExtensionContext,
     private readonly service: DatasetService,
     descriptor: { id: string; name: string; root?: string },
-    private readonly episode: LeRobotEpisode,
+    private episode: LeRobotEpisode,
   ) {
     super({
       context,
@@ -75,27 +71,70 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
       extraResourceRoots: descriptor.root ? [vscode.Uri.file(descriptor.root)] : [],
     });
     this.datasetId = descriptor.id;
+    this.descriptor = descriptor;
   }
 
-  private readonly datasetId: string;
+  private datasetId: string;
+  private descriptor: { id: string; name: string; root?: string };
+  private _initialized = false;
+  /** Video file paths currently served via HTTP servers — stopped on switch. */
+  private _servedVideoPaths: string[] = [];
+
+
+  /** Update the panel to show a different episode (same or different dataset). */
+  setEpisode(descriptor: { id: string; name: string; root?: string }, episode: LeRobotEpisode): void {
+    const datasetChanged = this.descriptor?.root !== descriptor.root;
+    this.datasetId = descriptor.id;
+    this.descriptor = descriptor;
+    this.episode = episode;
+    this.panel.title = `${descriptor.name} · Episode ${episode.episodeIndex}`;
+
+    // When switching to a different dataset, update localResourceRoots so
+    // the webview can access video files from the new dataset's directory.
+    if (datasetChanged && descriptor.root) {
+      this.panel.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [
+          vscode.Uri.joinPath(this.context.extensionUri, "dist"),
+          vscode.Uri.joinPath(this.context.extensionUri, "media"),
+          vscode.Uri.file(descriptor.root),
+        ],
+      };
+    }
+
+    // Trigger the webview to reload with new episode data.
+    void this.refreshPreview();
+  }
+
+  private async refreshPreview(): Promise<void> {
+    try {
+      const snapshot = await this.service.getSnapshot(this.datasetId);
+      const meta = await this.buildMeta(snapshot);
+      this.post({ type: "init-meta", data: meta });
+      const signals = await this.buildSignals(snapshot);
+      this.post({ type: "init-signals", data: signals });
+    } catch (err) {
+      logError("refreshPreview", err);
+    }
+  }
+
+  override dispose(): void {
+    for (const p of this._servedVideoPaths) stopServeVideo(p);
+    this._servedVideoPaths = [];
+    super.dispose();
+  }
 
   protected override extraCspDirectives(): Array<[string, string]> {
-    return [["media-src", `${this.panel.webview.cspSource} https: blob:`]];
+    return [["media-src", `${this.panel.webview.cspSource} https: blob: http://127.0.0.1:*`]];
   }
 
   protected async onMessage(message: FromWebviewMessage): Promise<void> {
     switch (message.type) {
       case "ready": {
-        // Two-stage init: send everything-but-signals first so the
-        // webview can paint videos + meta immediately, then send
-        // signals once parquet decode finishes. Especially helps SSH
-        // datasets, where signal decode is gated on a multi-second
-        // shard download.
-        const snapshot = await this.service.getSnapshot(this.datasetId);
-        const meta = await this.buildMeta(snapshot);
-        this.post({ type: "init-meta", data: meta });
-        const signals = await this.buildSignals(snapshot);
-        this.post({ type: "init-signals", data: signals });
+        if (!this._initialized) {
+          this._initialized = true;
+          await this.refreshPreview();
+        }
         return;
       }
       case "open-in-rerun": {
@@ -114,15 +153,35 @@ class EpisodePreviewPanel extends BaseWebviewPanel {
   }
 
   private async buildMeta(snapshot: Awaited<ReturnType<DatasetService["getSnapshot"]>>) {
+    // Stop video servers from the previous episode to free ports.
+    for (const p of this._servedVideoPaths) stopServeVideo(p);
+    this._servedVideoPaths = [];
+
     // Download/resolve video URIs in parallel so a multi-camera SSH
     // dataset doesn't pay for sequential downloads.
     const cameras = await Promise.all(
       snapshot.cameraKeys.map(async (key) => {
         const resolved = await resolveVideoUri(snapshot, this.episode, key);
         if (!resolved) return { key };
+        // Large videos → stream via our own HTTP server (supports Range).
+        // Small videos → VS Code webview local server (simpler, no Range needed).
+        let sz = 0;
+        try { sz = (await import("node:fs/promises").then((m) => m.stat(resolved.uri.fsPath))).size; } catch { /* ok */ }
+        const useStreaming = sz > 50 * 1024 * 1024;
+        let videoUri: string;
+        if (useStreaming) {
+          try {
+            videoUri = await serveVideo(resolved.uri.fsPath);
+            this._servedVideoPaths.push(resolved.uri.fsPath);
+          } catch {
+            videoUri = this.panel.webview.asWebviewUri(resolved.uri).toString();
+          }
+        } else {
+          videoUri = this.panel.webview.asWebviewUri(resolved.uri).toString();
+        }
         return {
           key,
-          videoUri: this.panel.webview.asWebviewUri(resolved.uri).toString(),
+          videoUri,
           shardFrameRange: resolved.location.shardFrameRange,
           note: resolved.location.note,
         };

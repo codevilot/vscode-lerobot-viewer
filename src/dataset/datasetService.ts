@@ -17,6 +17,9 @@ import { log, logError } from "../log";
 import type { DatasetDescriptor, DatasetSnapshot, SshTarget } from "../types";
 import { ensureHuggingFaceDataset } from "./huggingface";
 import { isLeRobotDataset, loadDataset } from "./datasetLoader";
+import { detectDatasetVersion } from "./DatasetVersionDetector";
+import { getAdapter } from "./adapters";
+import type { TaskInfo } from "../types";
 import {
   fetchSshDataset,
   setPinnedTargets,
@@ -319,6 +322,131 @@ export class DatasetService implements vscode.Disposable {
         });
       }
     }
+  }
+
+  /**
+   * Return the adapter for a dataset id. Throws for v3.0 datasets (mutation
+   * not yet supported) and when the root is not available.
+   */
+  private async getWritableAdapter(id: string) {
+    const descriptor = this.get(id);
+    if (!descriptor) throw new Error(`Unknown dataset id: ${id}`);
+    if (!descriptor.root) throw new Error(`Dataset ${descriptor.name} has no local root.`);
+    if (descriptor.source === "ssh") throw new Error("Task editing is not supported for SSH datasets.");
+    const detection = await detectDatasetVersion(descriptor.root);
+    if (detection.version === "v3.0") {
+      throw new Error("Task editing is not yet supported for v3.0 datasets.");
+    }
+    const adapter = getAdapter(detection.version);
+    if (!adapter.saveTasks || !adapter.readEpisodeRecords || !adapter.saveEpisodeRecords) {
+      throw new Error("This dataset version does not support task editing.");
+    }
+    return { adapter, root: descriptor.root };
+  }
+
+  /** Add a new task definition. Returns the created TaskInfo. */
+  async addTask(id: string, taskName: string): Promise<TaskInfo> {
+    const { adapter, root } = await this.getWritableAdapter(id);
+    const ctx = { root, info: await adapter.loadInfo(root) };
+    const existing = await adapter.loadTasks(ctx);
+
+    // Auto-assign next task_index.
+    const nextIndex =
+      existing.length > 0
+        ? Math.max(...existing.map((t) => t.taskIndex)) + 1
+        : 0;
+    const task: TaskInfo = { taskIndex: nextIndex, task: taskName };
+    existing.push(task);
+
+    await adapter.saveTasks!(root, existing);
+    this.snapshotCache.delete(id);
+    log(`Added task [${task.taskIndex}] "${task.task}" to dataset ${id}`);
+    return task;
+  }
+
+  /** Rename a task definition. Also updates episode references. */
+  async renameTask(id: string, oldName: string, newName: string): Promise<void> {
+    const { adapter, root } = await this.getWritableAdapter(id);
+    const ctx = { root, info: await adapter.loadInfo(root) };
+    const tasks = await adapter.loadTasks(ctx);
+    const target = tasks.find((t) => t.task === oldName);
+    if (!target) throw new Error(`Task "${oldName}" not found.`);
+    target.task = newName;
+    await adapter.saveTasks!(root, tasks);
+
+    // Update episode references.
+    const epRecords = await adapter.readEpisodeRecords!(root);
+    if (epRecords) {
+      let updated = 0;
+      for (const rec of epRecords) {
+        const episodeTasks = rec.tasks;
+        if (!Array.isArray(episodeTasks)) continue;
+        const idx = episodeTasks.indexOf(oldName);
+        if (idx >= 0) {
+          episodeTasks[idx] = newName;
+          updated++;
+        }
+      }
+      if (updated > 0) {
+        await adapter.saveEpisodeRecords!(root, epRecords);
+        log(`Updated "${oldName}" → "${newName}" in ${updated} episode(s)`);
+      }
+    }
+
+    this.snapshotCache.delete(id);
+    log(`Renamed task "${oldName}" → "${newName}" in dataset ${id}`);
+  }
+
+  /** Delete a task definition. Removes references from episodes. */
+  async deleteTask(id: string, taskName: string): Promise<void> {
+    const { adapter, root } = await this.getWritableAdapter(id);
+    const ctx = { root, info: await adapter.loadInfo(root) };
+    const tasks = await adapter.loadTasks(ctx);
+    const filtered = tasks.filter((t) => t.task !== taskName);
+    if (filtered.length === tasks.length) {
+      throw new Error(`Task "${taskName}" not found.`);
+    }
+    await adapter.saveTasks!(root, filtered);
+
+    // Remove references from episodes.
+    const epRecords = await adapter.readEpisodeRecords!(root);
+    if (epRecords) {
+      let updated = 0;
+      for (const rec of epRecords) {
+        const episodeTasks = rec.tasks;
+        if (!Array.isArray(episodeTasks)) continue;
+        const before = episodeTasks.length;
+        const newTasks = episodeTasks.filter((t: unknown) => t !== taskName);
+        if (newTasks.length !== before) {
+          rec.tasks = newTasks;
+          updated++;
+        }
+      }
+      if (updated > 0) {
+        await adapter.saveEpisodeRecords!(root, epRecords);
+        log(`Removed "${taskName}" from ${updated} episode(s)`);
+      }
+    }
+
+    this.snapshotCache.delete(id);
+    log(`Deleted task "${taskName}" from dataset ${id}`);
+  }
+
+  /** Set which tasks an episode belongs to. */
+  async setEpisodeTasks(datasetId: string, episodeIndex: number, taskNames: string[]): Promise<void> {
+    const { adapter, root } = await this.getWritableAdapter(datasetId);
+    const epRecords = await adapter.readEpisodeRecords!(root);
+    if (!epRecords) {
+      throw new Error("No episodes metadata file found.");
+    }
+    const rec = epRecords.find((r) => r.episode_index === episodeIndex);
+    if (!rec) {
+      throw new Error(`Episode ${episodeIndex} not found in episodes metadata.`);
+    }
+    rec.tasks = taskNames;
+    await adapter.saveEpisodeRecords!(root, epRecords);
+    this.snapshotCache.delete(datasetId);
+    log(`Set episode ${episodeIndex} tasks to [${taskNames.join(", ")}] in dataset ${datasetId}`);
   }
 
   /** Scan workspace folders for datasets up to a configurable depth. */

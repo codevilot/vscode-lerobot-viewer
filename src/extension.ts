@@ -25,6 +25,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Collapse-all is removed so the navigation toolbar can host the SSH
     // button; users can still collapse a node by clicking its chevron.
     showCollapseAll: false,
+    // Allow multi-select so users can batch-edit selected datasets/episodes.
     canSelectMany: true,
   });
   context.subscriptions.push(treeView);

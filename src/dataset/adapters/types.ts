@@ -62,4 +62,23 @@ export interface DatasetAdapter {
    * return an empty list rather than throwing if metadata is missing.
    */
   loadTasks(ctx: AdapterContext): Promise<TaskInfo[]>;
+
+  /**
+   * Write task definitions back to disk. Optional — adapters that don't
+   * support mutation (v3.0 / unknown) simply omit this method.
+   */
+  saveTasks?(root: string, tasks: TaskInfo[]): Promise<void>;
+
+  /**
+   * Read raw episode records from the canonical episode metadata file.
+   * Returns undefined when the file doesn't exist. Adapters that don't
+   * support mutation omit this method.
+   */
+  readEpisodeRecords?(root: string): Promise<Record<string, unknown>[] | undefined>;
+
+  /**
+   * Write episode records back to the canonical episode metadata file.
+   * Adapters that don't support mutation omit this method.
+   */
+  saveEpisodeRecords?(root: string, records: Record<string, unknown>[]): Promise<void>;
 }

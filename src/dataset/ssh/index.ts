@@ -11,6 +11,7 @@ export {
   sshCacheRoot,
   sshDatasetId,
   SSH_CACHE_LAST_ACCESS,
+  type ProbeResult,
 } from "./fetch";
 export { findRemoteDatasets, type ScanProgress } from "./scan";
 export {

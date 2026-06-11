@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.5
+
+End the "SSH dataset shows ENOENT after its cache was wiped" papercut, end-to-end.
+
+### Stale-cache sweep (activate-time)
+- When an SSH descriptor's cache directory is entirely gone (wiped by a prior session, manual globalStorage cleanup, etc.), the descriptor stays in the tree and opening it re-mirrors meta from SSH.
+- Cache dir present but `meta/info.json` missing (a fetch that died mid-mirror leaves this partial state) is treated as incomplete. The leftover dir is wiped, but the descriptor stays recoverable.
+- The "idle for 24h" rule still applies on top: stale cache dirs are removed, while descriptors remain listed so the next open can refresh from SSH. A single info toast at the end lists what got cleaned.
+
+### Runtime recovery (when user opens a dataset)
+- `getSnapshot` re-mirrors meta from the remote when the local cache is missing. The user sees a brief "refreshing …" indicator and load continues — no raw `ENOENT … meta/info.json` on the Episodes node.
+- If the re-mirror itself fails (remote folder gone, connection dropped, partial mirror), a modal dialog surfaces the error and offers "Remove from list" or "Keep" so the user decides whether to drop the broken descriptor.
+- `getSnapshot` also catches ENOENT thrown by `loadDataset` and re-runs recovery once with `force: true` before giving up — handles a cache wipe that races the load.
+
+### Plumbing
+- `fetchSshDataset` now fails loudly when mirroring finishes without `meta/info.json`. Previously a swallowed `sftp.list` error or partial `fastGet` could leave an empty meta dir on disk that surfaced as ENOENT downstream.
+- `mirrorDir` no longer swallows `sftp.list` failures with an empty array; if the directory can't be listed the whole mirror fails clearly instead of silently producing nothing.
+- `loadingPromises` entry is cleared in a `finally`, so a failed load no longer poisons subsequent retries with the same rejected promise.
+
 ## 0.1.4
 
 Episode page redesign + a pass over SSH dataset reliability.

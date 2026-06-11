@@ -51,21 +51,27 @@ export function sshDatasetId(target: SshTarget): string {
   return `ssh:${slug(target.host)}:${slug(target.remotePath)}`;
 }
 
-export async function probeRemoteDataset(
-  target: SshTarget,
-): Promise<{ ok: boolean; reason?: string }> {
+export type ProbeResult =
+  | { kind: "ok" }
+  | { kind: "missing"; reason: string }
+  | { kind: "unreachable"; reason: string };
+
+export async function probeRemoteDataset(target: SshTarget): Promise<ProbeResult> {
   try {
     return await withSftp(target, async (sftp) => {
       const stat = await sftp
         .stat(posix.join(target.remotePath, "meta", "info.json"))
         .catch(() => undefined);
       if (!stat || !stat.isFile) {
-        return { ok: false, reason: `No meta/info.json at ${target.remotePath}` };
+        return {
+          kind: "missing",
+          reason: `No meta/info.json at ${target.remotePath}`,
+        };
       }
-      return { ok: true };
+      return { kind: "ok" };
     });
   } catch (err) {
-    return { ok: false, reason: (err as Error).message };
+    return { kind: "unreachable", reason: (err as Error).message };
   }
 }
 
@@ -91,6 +97,21 @@ export async function fetchSshDataset(
       progress,
     );
   });
+
+  // mirrorDir swallows per-file fastGet failures so a partially-bad
+  // remote tree still leaves something usable. info.json is the one
+  // file the rest of the extension treats as load-bearing, so verify
+  // it actually landed before claiming success — otherwise the next
+  // loadDataset call surfaces a cryptic ENOENT to the user.
+  const infoPath = nodePath.join(cacheDir, "meta", "info.json");
+  try {
+    await fs.access(infoPath);
+  } catch {
+    throw new Error(
+      `Mirror of ${target.remotePath}/meta finished without info.json — connection likely dropped mid-transfer. Try again.`,
+    );
+  }
+
   await touchSshCacheAccess(cacheDir);
 
   const name = posix.basename(target.remotePath) || target.host;
@@ -142,9 +163,10 @@ async function mirrorDir(
   progress?: (msg: string) => void,
 ): Promise<void> {
   await fs.mkdir(localDir, { recursive: true });
-  const entries = await sftp
-    .list(remoteDir)
-    .catch(() => [] as Awaited<ReturnType<SftpClient["list"]>>);
+  // If we can't list the directory, the whole mirror is meaningless —
+  // surface that as an error rather than silently producing an empty
+  // local tree that then fails downstream with ENOENT.
+  const entries = await sftp.list(remoteDir);
   for (const entry of entries) {
     const remotePath = posix.join(remoteDir, entry.name);
     const localPath = nodePath.join(localDir, entry.name);

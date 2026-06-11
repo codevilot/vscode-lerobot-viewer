@@ -17,6 +17,7 @@ import {
 } from "./dataset/ssh";
 import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
+import { recomputeStats } from "./dataset/computeStats";
 import { log, logError } from "./log";
 import type { SshTarget } from "./types";
 
@@ -37,6 +38,7 @@ export const CommandIds = {
   editTasks: "lerobotViewer.editTasks",
   editEpisodeTasks: "lerobotViewer.editEpisodeTasks",
   renameDataset: "lerobotViewer.renameDataset",
+  recomputeStats: "lerobotViewer.recomputeStats",
 } as const;
 
 interface PreviewArgs {
@@ -292,6 +294,42 @@ export function registerCommands(
     if (updated) {
       tree.refresh();
       void vscode.window.showInformationMessage(`Renamed dataset to "${updated.name}".`);
+    }
+  });
+
+  reg(CommandIds.recomputeStats, async (...args: unknown[]) => {
+    const arg = args[0];
+    const datasetId = isDatasetNode(arg) ? arg.descriptor.id : undefined;
+    if (!datasetId) {
+      void vscode.window.showInformationMessage("Use the context menu on a local dataset to recompute stats.");
+      return;
+    }
+    const descriptor = service.get(datasetId);
+    if (!descriptor || !descriptor.root || descriptor.source === "ssh") {
+      void vscode.window.showInformationMessage("Stats recomputation is only supported for local datasets.");
+      return;
+    }
+
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Recomputing stats for ${descriptor.name}`,
+          cancellable: false,
+        },
+        async (progress) => {
+          await recomputeStats(descriptor.root!, (p) => {
+            const message = p.total > 0 ? `${p.done}/${p.total}` : "processing video features";
+            progress.report({ message });
+          });
+        },
+      );
+      service.invalidate(datasetId);
+      tree.refresh();
+      void vscode.window.showInformationMessage("Stats recomputed.");
+    } catch (err) {
+      logError(`recomputing stats for ${datasetId}`, err);
+      void vscode.window.showErrorMessage(`Failed to recompute stats: ${(err as Error).message}`);
     }
   });
 

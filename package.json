@@ -140,6 +140,11 @@
         "command": "lerobotViewer.renameDataset",
         "title": "LeRobot: Rename Dataset",
         "icon": "$(edit)"
+      },
+      {
+        "command": "lerobotViewer.recomputeStats",
+        "title": "LeRobot: Recompute Stats",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
@@ -212,9 +217,14 @@
           "group": "1_modify@2"
         },
         {
-          "command": "lerobotViewer.revealInExplorer",
+          "command": "lerobotViewer.recomputeStats",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@3"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@4"
         }
       ],
       "commandPalette": [
@@ -248,6 +258,10 @@
         },
         {
           "command": "lerobotViewer.renameDataset",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.recomputeStats",
           "when": "false"
         }
       ]

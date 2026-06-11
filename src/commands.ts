@@ -17,12 +17,13 @@ import {
 } from "./dataset/ssh";
 import * as posix from "node:path/posix";
 import { launchRerun } from "./rerun/rerunLauncher";
-import { log } from "./log";
+import { log, logError } from "./log";
 import type { SshTarget } from "./types";
 
 export const CommandIds = {
   openDataset: "lerobotViewer.openDataset",
   previewEpisode: "lerobotViewer.previewEpisode",
+  deleteEpisode: "lerobotViewer.deleteEpisode",
   openMetadata: "lerobotViewer.openMetadata",
   openInRerun: "lerobotViewer.openInRerun",
   addDatasetFolder: "lerobotViewer.addDatasetFolder",
@@ -225,6 +226,48 @@ export function registerCommands(
     const episodeIndices = nodes.map((n) => n.episode.episodeIndex);
     await runEpisodeTaskPicker(service, datasetId, episodeIndices);
     tree.refresh();
+  });
+
+  reg(CommandIds.deleteEpisode, async (...args: unknown[]) => {
+    const arg = args[0];
+    let nodes = extractEpisodeNodesFromSelection(treeView.selection);
+    if (nodes.length === 0 && isEpisodeNode(arg)) {
+      nodes = [arg];
+    }
+    if (nodes.length === 0) {
+      void vscode.window.showInformationMessage("Select one or more episodes to delete.");
+      return;
+    }
+
+    const datasetIds = new Set(nodes.map((node) => node.datasetId));
+    if (datasetIds.size !== 1) {
+      void vscode.window.showInformationMessage("Delete episodes from one dataset at a time.");
+      return;
+    }
+
+    const datasetId = nodes[0].datasetId;
+    const episodeIndices = [...new Set(nodes.map((node) => node.episode.episodeIndex))].sort((a, b) => a - b);
+    const label =
+      episodeIndices.length === 1
+        ? `Delete episode ${episodeIndices[0]}?`
+        : `Delete ${episodeIndices.length} episodes?`;
+    const choice = await vscode.window.showWarningMessage(
+      `${label} This updates v2.x metadata and permanently removes matching episode files from disk.`,
+      { modal: true },
+      "Delete",
+    );
+    if (choice !== "Delete") return;
+
+    try {
+      const deleted = await service.deleteEpisodes(datasetId, episodeIndices);
+      tree.refresh();
+      void vscode.window.showInformationMessage(
+        `Deleted ${deleted.length} episode${deleted.length === 1 ? "" : "s"}.`,
+      );
+    } catch (err) {
+      logError(`deleting episodes from ${datasetId}`, err);
+      void vscode.window.showErrorMessage(`Could not delete episodes: ${(err as Error).message}`);
+    }
   });
 
   reg(CommandIds.renameDataset, async (...args: unknown[]) => {

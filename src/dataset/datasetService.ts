@@ -20,6 +20,7 @@ import { isLeRobotDataset, loadDataset } from "./datasetLoader";
 import { detectDatasetVersion } from "./DatasetVersionDetector";
 import { getAdapter } from "./adapters";
 import { exists } from "./adapters/util";
+import { deleteV2Episodes } from "./deleteEpisode";
 import type { TaskInfo } from "../types";
 import {
   fetchSshDataset,
@@ -344,6 +345,24 @@ export class DatasetService implements vscode.Disposable {
       root: newPath,
     };
     return this.upsert(updated);
+  }
+
+  async deleteEpisodes(datasetId: string, episodeIndices: readonly number[]): Promise<number[]> {
+    const descriptor = this.get(datasetId);
+    if (!descriptor) throw new Error(`Unknown dataset id: ${datasetId}`);
+    if (!descriptor.root) throw new Error("Dataset root is unavailable.");
+    if (descriptor.source === "ssh") {
+      throw new Error("Deleting episodes from SSH datasets is not supported.");
+    }
+
+    const snapshot = await this.getSnapshot(datasetId);
+    const result = await deleteV2Episodes(descriptor.root, snapshot, episodeIndices);
+    this.invalidate(datasetId);
+    log(
+      `Deleted episodes [${result.deleted.join(", ")}] from ${datasetId}; ` +
+        `${result.deletedFiles.length} file(s) removed, ${result.missingFiles.length} missing`,
+    );
+    return result.deleted;
   }
 
   remove(id: string): void {

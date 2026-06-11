@@ -165,6 +165,16 @@
         "command": "lerobotViewer.mergeDatasets",
         "title": "LeRobot: Merge Datasets",
         "icon": "$(merge)"
+      },
+      {
+        "command": "lerobotViewer.convertToV21",
+        "title": "LeRobot: Convert to v2.1",
+        "icon": "$(export)"
+      },
+      {
+        "command": "lerobotViewer.convertToV30",
+        "title": "LeRobot: Convert to v3.0",
+        "icon": "$(export)"
       }
     ],
     "menus": {
@@ -247,24 +257,34 @@
           "group": "1_modify@4"
         },
         {
-          "command": "lerobotViewer.renameFeature",
+          "command": "lerobotViewer.convertToV30",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@5"
         },
         {
-          "command": "lerobotViewer.deleteFeature",
+          "command": "lerobotViewer.convertToV21",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@6"
         },
         {
-          "command": "lerobotViewer.dropDimensions",
+          "command": "lerobotViewer.renameFeature",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@7"
         },
         {
-          "command": "lerobotViewer.revealInExplorer",
+          "command": "lerobotViewer.deleteFeature",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@8"
+        },
+        {
+          "command": "lerobotViewer.dropDimensions",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@9"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@10"
         }
       ],
       "commandPalette": [
@@ -318,6 +338,14 @@
         },
         {
           "command": "lerobotViewer.mergeDatasets",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.convertToV21",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.convertToV30",
           "when": "false"
         }
       ]

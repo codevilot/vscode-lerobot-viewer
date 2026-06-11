@@ -21,6 +21,7 @@ import { recomputeStats } from "./dataset/computeStats";
 import { deleteFeature } from "./dataset/deleteFeature";
 import { dropDimensions } from "./dataset/dropDimensions";
 import { renameFeature } from "./dataset/renameFeature";
+import { mergeDatasets } from "./dataset/mergeDataset";
 import { log, logError } from "./log";
 import type { SshTarget } from "./types";
 
@@ -45,6 +46,7 @@ export const CommandIds = {
   renameFeature: "lerobotViewer.renameFeature",
   deleteFeature: "lerobotViewer.deleteFeature",
   dropDimensions: "lerobotViewer.dropDimensions",
+  mergeDatasets: "lerobotViewer.mergeDatasets",
 } as const;
 
 interface PreviewArgs {
@@ -476,6 +478,54 @@ export function registerCommands(
     } catch (err) {
       logError(`dropping dimensions from ${ctx.feature.key} in ${ctx.datasetId}`, err);
       void vscode.window.showErrorMessage(`Failed to drop dimensions: ${(err as Error).message}`);
+    }
+  });
+
+  reg(CommandIds.mergeDatasets, async () => {
+    const nodes = extractDatasetNodes(treeView.selection);
+    if (nodes.length < 2) {
+      void vscode.window.showInformationMessage("Select two or more local datasets to merge.");
+      return;
+    }
+    const sshNodes = nodes.filter((node) => node.descriptor.source === "ssh");
+    if (sshNodes.length > 0) {
+      void vscode.window.showInformationMessage("SSH datasets cannot be merged. Add local copies first.");
+      return;
+    }
+
+    const targetUri = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      openLabel: "Select merge target folder",
+      title: "Pick an empty folder for the merged dataset",
+    });
+    if (!targetUri || targetUri.length === 0) return;
+
+    try {
+      const snapshots: Awaited<ReturnType<DatasetService["getSnapshot"]>>[] = [];
+      for (const node of nodes) {
+        snapshots.push(await service.getSnapshot(node.descriptor.id));
+      }
+      const result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Merging datasets",
+          cancellable: false,
+        },
+        async (progress) => {
+          return mergeDatasets(snapshots, targetUri[0].fsPath, (p) =>
+            progress.report({ message: `${p.done}/${p.total} episodes` }),
+          );
+        },
+      );
+      await service.addLocalFolder(targetUri[0]);
+      void vscode.window.showInformationMessage(
+        `Merged ${nodes.length} datasets: ${result.totalEpisodes} episodes, ${result.totalFrames} frames.`,
+      );
+    } catch (err) {
+      logError("merging datasets", err);
+      void vscode.window.showErrorMessage(`Failed to merge datasets: ${(err as Error).message}`);
     }
   });
 

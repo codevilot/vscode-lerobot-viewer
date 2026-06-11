@@ -160,6 +160,11 @@
         "command": "lerobotViewer.dropDimensions",
         "title": "LeRobot: Drop Dimensions",
         "icon": "$(filter)"
+      },
+      {
+        "command": "lerobotViewer.mergeDatasets",
+        "title": "LeRobot: Merge Datasets",
+        "icon": "$(merge)"
       }
     ],
     "menus": {
@@ -237,24 +242,29 @@
           "group": "1_modify@3"
         },
         {
-          "command": "lerobotViewer.renameFeature",
+          "command": "lerobotViewer.mergeDatasets",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@4"
         },
         {
-          "command": "lerobotViewer.deleteFeature",
+          "command": "lerobotViewer.renameFeature",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@5"
         },
         {
-          "command": "lerobotViewer.dropDimensions",
+          "command": "lerobotViewer.deleteFeature",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@6"
         },
         {
-          "command": "lerobotViewer.revealInExplorer",
+          "command": "lerobotViewer.dropDimensions",
           "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
           "group": "1_modify@7"
+        },
+        {
+          "command": "lerobotViewer.revealInExplorer",
+          "when": "view == lerobotViewer.datasets && viewItem == lerobotDataset",
+          "group": "1_modify@8"
         }
       ],
       "commandPalette": [
@@ -304,6 +314,10 @@
         },
         {
           "command": "lerobotViewer.dropDimensions",
+          "when": "false"
+        },
+        {
+          "command": "lerobotViewer.mergeDatasets",
           "when": "false"
         }
       ]

@@ -84,13 +84,115 @@ export class DatasetService implements vscode.Disposable {
     if (!descriptor) throw new Error(`Unknown dataset id: ${id}`);
 
     const promise = (async () => {
-      const snap = await loadDataset(descriptor);
-      this.snapshotCache.set(id, snap);
-      this.loadingPromises.delete(id);
-      return snap;
+      try {
+        await this.ensureSshMetaPresent(descriptor);
+        try {
+          const snap = await loadDataset(descriptor);
+          this.snapshotCache.set(id, snap);
+          return snap;
+        } catch (err) {
+          // Catch races / edge cases that slip past the up-front
+          // ensureSshMetaPresent check: the cache can be wiped between
+          // the access() probe and loadDataset (background stale
+          // sweep), or the descriptor may have lost its `ssh` field
+          // somehow (in which case ensureSshMetaPresent early-
+          // returned). Re-run recovery once and retry.
+          if (
+            descriptor.source === "ssh" &&
+            descriptor.ssh &&
+            isMissingFileError(err)
+          ) {
+            log(
+              `loadDataset ENOENT for ${id}; forcing SSH meta recovery and retrying once`,
+            );
+            await this.ensureSshMetaPresent(descriptor, { force: true });
+            const snap = await loadDataset(descriptor);
+            this.snapshotCache.set(id, snap);
+            return snap;
+          }
+          throw err;
+        }
+      } finally {
+        this.loadingPromises.delete(id);
+      }
     })();
     this.loadingPromises.set(id, promise);
     return promise;
+  }
+
+  /**
+   * For SSH datasets, the cache dir under globalStorage can disappear
+   * between sessions — the stale-cache sweep wipes anything idle for
+   * 24h, and manual "Clean SSH cache" wipes everything. When that
+   * happens the descriptor's root points at a non-existent path and
+   * loadDataset throws ENOENT on meta/info.json. Re-mirror meta from
+   * the remote so the next load succeeds.
+   *
+   * Note: we deliberately do NOT auto-remove the descriptor when the
+   * remote folder is gone. Removal didn't feel safe in practice —
+   * better to surface the error and let the user decide whether to
+   * remove or wait for the remote to come back.
+   */
+  private async ensureSshMetaPresent(
+    descriptor: DatasetDescriptor,
+    opts: { force?: boolean } = {},
+  ): Promise<void> {
+    if (descriptor.source !== "ssh") return;
+    if (!descriptor.ssh) {
+      log(
+        `SSH descriptor ${descriptor.id} is missing its ssh target; cannot recover (root=${descriptor.root ?? "<none>"})`,
+      );
+      return;
+    }
+    if (!descriptor.root) {
+      log(
+        `SSH descriptor ${descriptor.id} is missing its root; cannot recover (ssh=${descriptor.ssh.host}:${descriptor.ssh.remotePath})`,
+      );
+      return;
+    }
+    const infoPath = path.join(descriptor.root, "meta", "info.json");
+    if (!opts.force) {
+      try {
+        await fs.access(infoPath);
+        return;
+      } catch {
+        // fall through to re-fetch
+      }
+    }
+
+    log(`SSH cache missing for ${descriptor.id} (root=${descriptor.root}); re-mirroring meta`);
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Window,
+          title: `LeRobot · refreshing ${descriptor.name}`,
+        },
+        async (progress) => {
+          await fetchSshDataset(descriptor.ssh!, sshCacheRoot(this.context), (msg) =>
+            progress.report({ message: msg }),
+          );
+        },
+      );
+    } catch (err) {
+      // Re-fetch failed — remote folder may be gone, connection may
+      // have dropped, or the mirror finished without info.json. Ask
+      // the user whether to remove the descriptor: silent auto-remove
+      // felt unsafe, silent retention leaves an obviously-broken row
+      // in the tree.
+      log(`SSH re-mirror failed for ${descriptor.id}: ${(err as Error).message}`);
+      const choice = await vscode.window.showWarningMessage(
+        `Could not refresh "${descriptor.name}": ${(err as Error).message}`,
+        { modal: true },
+        "Remove from list",
+        "Keep",
+      );
+      if (choice === "Remove from list") {
+        log(`User chose to remove ${descriptor.id} after failed re-mirror`);
+        this.remove(descriptor.id);
+      }
+      throw err;
+    }
+    log(`SSH dataset ${descriptor.id} re-mirror complete`);
   }
 
   invalidate(id?: string): void {
@@ -350,9 +452,8 @@ export class DatasetService implements vscode.Disposable {
    * Delete cached SSH dataset directories that haven't been touched
    * within STALE_CACHE_THRESHOLD_MS. "Touched" means a successful
    * fetchSshDataset / ensureSshFile call refreshed the cache root's
-   * `.last-access` sentinel; cache dirs older than that lose their
-   * meta + downloaded files (the descriptor stays in the tree, so
-   * the next open just re-downloads).
+   * `.last-access` sentinel. The descriptor stays in the tree; the
+   * next open re-downloads meta from the remote.
    *
    * Runs in the background on activate. Legacy caches (older than
    * this feature) get a sentinel written on first sight rather than
@@ -361,18 +462,61 @@ export class DatasetService implements vscode.Disposable {
   private async cleanStaleSshCaches(): Promise<void> {
     const cacheRoot = sshCacheRoot(this.context);
     const now = Date.now();
-    let removed = 0;
+    const cleanedNames: string[] = [];
     for (const d of this.descriptors) {
       if (d.source !== "ssh" || !d.ssh) continue;
       const dir = sshCacheDir(cacheRoot, d.ssh);
+
+      // Cache directory entirely gone: keep the descriptor. Opening the
+      // dataset will call ensureSshMetaPresent and re-mirror meta from
+      // the remote, which is the recovery path this service promises.
+      let dirExists = false;
+      try {
+        const stat = await fs.stat(dir);
+        dirExists = stat.isDirectory();
+      } catch {
+        dirExists = false;
+      }
+      if (!dirExists) {
+        this.snapshotCache.delete(d.id);
+        log(`SSH cache: dir missing for ${d.id} (${dir}); keeping descriptor for recovery`);
+        continue;
+      }
+
+      // Cache dir exists but `meta/info.json` is gone (partial fetch
+      // that died mid-mirror, manual file deletion, fs corruption,
+      // etc.). Wipe the leftover dir but keep the descriptor so the
+      // next open takes the same recovery path as a fully-missing cache.
+      let infoExists = false;
+      try {
+        await fs.access(path.join(dir, "meta", "info.json"));
+        infoExists = true;
+      } catch {
+        infoExists = false;
+      }
+      if (!infoExists) {
+        try {
+          await fs.rm(dir, { recursive: true, force: true });
+        } catch (err) {
+          logError(`wiping incomplete SSH cache ${dir}`, err);
+        }
+        this.snapshotCache.delete(d.id);
+        cleanedNames.push(d.name);
+        log(
+          `SSH cache: meta/info.json missing for ${d.id} (${dir}); wiped cache and kept descriptor`,
+        );
+        continue;
+      }
+
       const sentinel = path.join(dir, SSH_CACHE_LAST_ACCESS);
       let mtime: number;
       try {
         const stat = await fs.stat(sentinel);
         mtime = stat.mtimeMs;
       } catch {
-        // No sentinel yet. Treat this as a freshly-discovered cache —
-        // write the sentinel with the current time and skip deletion.
+        // Cache dir exists but no sentinel (legacy cache from before
+        // this feature). Start the clock now; don't remove yet so the
+        // upgrade doesn't lose data.
         try {
           await fs.writeFile(sentinel, "");
         } catch {
@@ -384,7 +528,7 @@ export class DatasetService implements vscode.Disposable {
       try {
         await fs.rm(dir, { recursive: true, force: true });
         this.snapshotCache.delete(d.id);
-        removed++;
+        cleanedNames.push(d.name);
         log(
           `SSH cache: removed stale ${dir} (idle for ${Math.round((now - mtime) / 3_600_000)}h)`,
         );
@@ -392,7 +536,16 @@ export class DatasetService implements vscode.Disposable {
         logError(`cleaning stale SSH cache ${dir}`, err);
       }
     }
-    if (removed > 0) log(`SSH cache: cleaned ${removed} stale dir(s)`);
+    if (cleanedNames.length > 0) {
+      log(
+        `SSH cache: cleaned ${cleanedNames.length} stale/incomplete dir(s): ${cleanedNames.join(", ")}`,
+      );
+      const preview = cleanedNames.slice(0, 3).join(", ");
+      const more = cleanedNames.length > 3 ? `, +${cleanedNames.length - 3} more` : "";
+      void vscode.window.showInformationMessage(
+        `Cleaned SSH cache for ${cleanedNames.length} dataset${cleanedNames.length === 1 ? "" : "s"} (${preview}${more}). They will refresh from SSH when opened.`,
+      );
+    }
   }
 
   /**
@@ -462,6 +615,14 @@ function isPlainDescriptor(value: unknown): value is DatasetDescriptor {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return typeof v.id === "string" && typeof v.name === "string" && typeof v.source === "string";
+}
+
+function isMissingFileError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === "ENOENT") return true;
+  const msg = (err as { message?: unknown }).message;
+  return typeof msg === "string" && msg.includes("ENOENT");
 }
 
 function dedupeById(items: DatasetDescriptor[]): DatasetDescriptor[] {

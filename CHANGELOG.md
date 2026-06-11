@@ -2,7 +2,19 @@
 
 ## 0.1.5
 
-End the "SSH dataset shows ENOENT after its cache was wiped" papercut, end-to-end.
+Dataset editing, conversion, and safer SSH cache recovery.
+
+### Dataset editing and conversion
+- Fixed v3.0 video preview when multiple episodes share the same video shard by using the episode's video timestamp range instead of the data frame range.
+- Reused the episode preview panel safely across datasets and episodes, including the metadata preview path.
+- Added multi-select dataset add/remove actions.
+- Added local dataset rename support.
+- Added task and task-index editing for local datasets.
+- Added v2 episode deletion.
+- Added v2 feature editing: rename features, delete features, and drop selected dimensions.
+- Added dataset statistics recomputation.
+- Added v2 dataset merge support.
+- Added v2.1 <-> v3.0 dataset conversion support.
 
 ### Stale-cache sweep (activate-time)
 - When an SSH descriptor's cache directory is entirely gone (wiped by a prior session, manual globalStorage cleanup, etc.), the descriptor stays in the tree and opening it re-mirrors meta from SSH.
